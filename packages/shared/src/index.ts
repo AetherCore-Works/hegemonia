@@ -328,6 +328,7 @@ export interface PlayerMatchAnalytics {
   unitsRecruited: UnitCounts;
   unitsLost: UnitCounts;
   unificationRounds: Partial<Record<ContinentId, number>>;
+  combatsWon?: number;
 }
 
 export function createInitialPlayerAnalytics(capitalContinentId?: ContinentId): PlayerMatchAnalytics {
@@ -392,6 +393,8 @@ export interface PlayerState {
   connected: boolean;
   /** Designated national capital territory ID */
   capitalTerritoryId?: string;
+  /** Round number when the capital was last established or relocated (used by Partisan Nomadic Capital) */
+  lastCapitalRelocationRound?: number;
   /** Whether the capital was conquered/occupied by an adversary */
   isCapitalLost?: boolean;
   /** Round or turn when the capital was lost */
@@ -406,6 +409,14 @@ export interface PlayerState {
   bastionRoundsHeld?: number;
   /** Number of consecutive rounds a player has held their Sovereign Wonder (MARAVILHA) */
   wonderRoundsHeld?: number;
+  /** Lifecycle status of the Doomsday Citadel (Wonder): constructing or 6-turn countdown (HEGEM-161) */
+  wonderStatus?: "constructing" | "countdown";
+  /** Remaining construction rounds before the Doomsday Citadel activates (HEGEM-161) */
+  wonderConstructionLeft?: number;
+  /** Remaining countdown rounds (6 -> 0) after the Doomsday Citadel is completed (HEGEM-161) */
+  wonderCountdownLeft?: number;
+  /** Territory ID where the player's Wonder is located */
+  wonderTerritoryId?: string;
   /** National treasury ($) and strategic resource stockpiles (steel, oil, gold) */
   resources: PlayerResources;
   /** Whether this player has already purchased a supply card with gold on the current turn */
@@ -524,6 +535,157 @@ export interface TacticalStrikeEvent {
   round: number;
 }
 
+export interface RoundPlayerSnapshot {
+  territories: number;
+  armies: number;
+  money: number;
+  resourcesTotal: number;
+  combatsWon: number;
+}
+
+export interface RoundSnapshot {
+  round: number;
+  worldTension: number;
+  players: Record<string, RoundPlayerSnapshot>;
+}
+
+export interface PauseStateView {
+  paused: boolean;
+  reason: "disconnect" | "manual";
+  pausedPlayerId?: string | null;
+  pausedPlayerName?: string | null;
+  resumeDeadline?: number | null;
+}
+
+export const RulesPresetIdSchema = z.enum([
+  "standard",
+  "classic_war",
+  "blitz",
+  "superpower",
+  "custom",
+]);
+export type RulesPresetId = z.infer<typeof RulesPresetIdSchema>;
+
+export const CustomRulesConfigSchema = z.object({
+  preset: RulesPresetIdSchema.default("standard"),
+  classicMode: z.boolean().default(false),
+  economyMultiplier: z.number().min(0.5).max(3).default(1),
+  worldTensionSpeed: z.number().min(0.5).max(2.5).default(1),
+  doctrineLimitEnabled: z.boolean().default(true),
+  turnOneTimerSeconds: z.number().int().min(15).max(180).default(60),
+  turnTimerSeconds: z.number().int().min(30).max(300).default(120),
+  supplyCardGoldCost: z.number().int().min(1).max(10).default(4),
+  buildingCostMultiplier: z.number().min(0.5).max(2).default(1),
+});
+export type CustomRulesConfig = z.infer<typeof CustomRulesConfigSchema>;
+
+export const DEFAULT_CUSTOM_RULES: CustomRulesConfig = {
+  preset: "standard",
+  classicMode: false,
+  economyMultiplier: 1,
+  worldTensionSpeed: 1,
+  doctrineLimitEnabled: true,
+  turnOneTimerSeconds: 60,
+  turnTimerSeconds: 120,
+  supplyCardGoldCost: 4,
+  buildingCostMultiplier: 1,
+};
+
+export interface RulesPresetDef {
+  id: Exclude<RulesPresetId, "custom">;
+  namePt: string;
+  nameEn: string;
+  descPt: string;
+  descEn: string;
+  config: CustomRulesConfig;
+}
+
+export const RULES_PRESETS: Record<Exclude<RulesPresetId, "custom">, RulesPresetDef> = {
+  standard: {
+    id: "standard",
+    namePt: "Hegemonia Padrão (v0.6.2)",
+    nameEn: "Standard Hegemonia (v0.6.2)",
+    descPt: "Balanceamento competitivo completo com 7 Doutrinas, Economia de Guerra e Armas Combinadas.",
+    descEn: "Full competitive balance with 7 Doctrines, War Economy, and Combined Arms.",
+    config: { ...DEFAULT_CUSTOM_RULES, preset: "standard" },
+  },
+  classic_war: {
+    id: "classic_war",
+    namePt: "Modo Clássico (War / Risk)",
+    nameEn: "Classic Mode (War / Risk)",
+    descPt: "Apenas Infantaria e Troca de Cartas tradicional. Desativa economia, obras, mercado e doutrinas.",
+    descEn: "Infantry-only and traditional Card Trades. Disables economy, structures, market, and doctrines.",
+    config: {
+      ...DEFAULT_CUSTOM_RULES,
+      preset: "classic_war",
+      classicMode: true,
+      doctrineLimitEnabled: false,
+    },
+  },
+  blitz: {
+    id: "blitz",
+    namePt: "Blitzkrieg Rápida",
+    nameEn: "Fast Blitzkrieg",
+    descPt: "Ritmo acelerado: economia 1.5x, Tensão Mundial 2x, Turno 1 em 30s e turnos de 60s.",
+    descEn: "High tempo: 1.5x economy, 2x World Tension, 30s Turn 1 and 60s standard turns.",
+    config: {
+      ...DEFAULT_CUSTOM_RULES,
+      preset: "blitz",
+      economyMultiplier: 1.5,
+      worldTensionSpeed: 2,
+      turnOneTimerSeconds: 30,
+      turnTimerSeconds: 60,
+    },
+  },
+  superpower: {
+    id: "superpower",
+    namePt: "Guerra Fria & Superpotências",
+    nameEn: "Cold War & Superpowers",
+    descPt: "Economia 2x, obras 25% mais baratas e cartas estratégicas por 3 Ouros.",
+    descEn: "2x economy, 25% cheaper structures, and strategic cards for 3 Gold.",
+    config: {
+      ...DEFAULT_CUSTOM_RULES,
+      preset: "superpower",
+      economyMultiplier: 2,
+      buildingCostMultiplier: 0.75,
+      supplyCardGoldCost: 3,
+      worldTensionSpeed: 1.5,
+    },
+  },
+};
+
+export function normalizeCustomRules(
+  input?: Partial<CustomRulesConfig> | Record<string, unknown> | null
+): CustomRulesConfig {
+  const parsed = CustomRulesConfigSchema.safeParse(input ?? {});
+  if (parsed.success) return parsed.data;
+  return { ...DEFAULT_CUSTOM_RULES };
+}
+
+export type DramaticEventKind =
+  | "player_eliminated"
+  | "extermination_first_kill"
+  | "wonder_started"
+  | "wonder_completed"
+  | "wonder_destroyed"
+  | "naval_blockade";
+
+export interface DramaticEvent {
+  id: string;
+  kind: DramaticEventKind;
+  round: number;
+  tone: "crimson" | "gold" | "cyan" | "amber";
+  titlePt: string;
+  titleEn: string;
+  subtitlePt: string;
+  subtitleEn: string;
+  bodyPt: string;
+  bodyEn: string;
+  actorPlayerId?: string;
+  targetPlayerId?: string;
+  territoryId?: string;
+}
+
 export interface GameState {
   id: string;
   round: number;
@@ -553,6 +715,14 @@ export interface GameState {
   investmentRoutes: InvestmentRoute[];
   /** Active and pending border trade resource extraction contracts */
   borderTrades: BorderTradeDeal[];
+  /** Optional custom lobby rules / preset config (HEGEM-67 / HEGEM-110) */
+  rulesConfig?: CustomRulesConfig;
+  /** Per-round summary snapshots for post-game After-Action Report (HEGEM-151) */
+  roundHistory?: RoundSnapshot[];
+  /** Global floating HOI4/EU4-style critical event queue (HEGEM-160) */
+  dramaticEvents?: DramaticEvent[];
+  /** Whether Extermination's first player elimination event has already fired */
+  exterminationFirstKillAnnounced?: boolean;
 }
 
 export interface LobbyPlayerView {
@@ -755,6 +925,11 @@ export const JoinCoalitionActionSchema = z.object({
   coalitionId: z.string(),
 });
 
+export const LeaveCoalitionActionSchema = z.object({
+  type: z.literal("leave_coalition"),
+  coalitionId: z.string(),
+});
+
 export const ChooseObjectiveActionSchema = z.object({
   type: z.literal("choose_objective"),
   objectiveId: z.string(),
@@ -819,6 +994,7 @@ export const GameActionSchema = z.discriminatedUnion("type", [
   BreakTreatyActionSchema,
   FormCoalitionActionSchema,
   JoinCoalitionActionSchema,
+  LeaveCoalitionActionSchema,
 ]);
 
 export type GameAction = z.infer<typeof GameActionSchema>;

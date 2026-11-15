@@ -1364,13 +1364,13 @@ export const V06_ASYMMETRIC_OBJECTIVES: ObjectiveCard[] = [
   {
     id: "obj_bretton_woods",
     descriptionPt:
-      "Hegemonia Econômica (Bretton Woods): Acumular $300 no Tesouro, 50 de Ouro de Reserva e manter 2 rotas de investimento ativas.",
+      "Hegemonia Econômica (Bretton Woods): Acumular $450 no Tesouro, 75 de Ouro de Reserva e manter 2 rotas de investimento ativas.",
     descriptionEn:
-      "Economic Hegemony (Bretton Woods): Accumulate $300 in Treasury, 50 Reserve Gold, and maintain 2 active investment routes.",
+      "Economic Hegemony (Bretton Woods): Accumulate $450 in Treasury, 75 Reserve Gold, and maintain 2 active investment routes.",
     rule: {
       type: "economic_hegemony",
-      targetMoney: 300,
-      targetGold: 50,
+      targetMoney: 450,
+      targetGold: 75,
       activeInvestmentRoutes: 2,
       consecutiveRoundsRequired: 2,
     },
@@ -1379,26 +1379,26 @@ export const V06_ASYMMETRIC_OBJECTIVES: ObjectiveCard[] = [
   {
     id: "obj_fortified_bastion",
     descriptionPt:
-      "Bastião Inexpugnável (Soberania Fortificada): Manter pelo menos 4 territórios fortificados (com Fortaleza/Casamata) sem invasão durante 5 rodadas.",
+      "Cidadela do Dia Final (Bastião): Construir a Maravilha 'Cidadela do Dia Final' em território fortificado (+1 dado de defesa na obra) e sobreviver à contagem regressiva de 6 rodadas.",
     descriptionEn:
-      "Impregnable Bastion (Sovereign Fortress): Maintain at least 4 fortified territories with Fortresses/Casemates unbreached for 5 rounds.",
+      "Doomsday Citadel (Bastion): Build the 'Doomsday Citadel' Wonder on a fortified territory (+1 defense die during construction) and survive the 6-round countdown.",
     rule: {
       type: "fortified_bastion",
-      bastionTerritoryCount: 4,
-      roundsRequired: 5,
+      bastionTerritoryCount: 1,
+      roundsRequired: 6,
     },
     allowedDoctrines: ["tall_sovereign", "defense_in_depth"],
   },
   {
     id: "obj_sovereign_citadel",
     descriptionPt:
-      "Cidadela Soberana (Bastião de Defesa): Manter pelo menos 3 territórios fortificados (com Fortaleza/Casamata) sem invasão durante 4 rodadas.",
+      "Protocolo Dia Final (Cidadela Soberana): Construir a Maravilha 'Cidadela do Dia Final' em território fortificado (+1 dado de defesa na obra) e sobreviver à contagem regressiva de 6 rodadas.",
     descriptionEn:
-      "Sovereign Citadel (Defense Bastion): Maintain at least 3 fortified territories with Fortresses/Casemates unbreached for 4 rounds.",
+      "Doomsday Protocol (Sovereign Citadel): Build the 'Doomsday Citadel' Wonder on a fortified territory (+1 defense die during construction) and survive the 6-round countdown.",
     rule: {
       type: "fortified_bastion",
-      bastionTerritoryCount: 3,
-      roundsRequired: 4,
+      bastionTerritoryCount: 1,
+      roundsRequired: 6,
     },
     allowedDoctrines: ["tall_sovereign", "defense_in_depth"],
   },
@@ -1444,27 +1444,26 @@ export const V06_ASYMMETRIC_OBJECTIVES: ObjectiveCard[] = [
   {
     id: "obj_extermination_capital_scourge",
     descriptionPt:
-      "Flagelo dos Continentes (Doutrina de Extermínio): Eliminar diretamente no mínimo 2 generais adversários e ocupar pelo menos 18 territórios devastados.",
+      "Flagelo dos Continentes (Doutrina de Extermínio): Eliminar diretamente no mínimo 2 generais adversários e ocupar pelo menos 20 territórios devastados.",
     descriptionEn:
-      "Continent Scourge (Extermination Doctrine): Directly eliminate at least 2 enemy generals and occupy at least 18 devastated territories.",
+      "Continent Scourge (Extermination Doctrine): Directly eliminate at least 2 enemy generals and occupy at least 20 devastated territories.",
     rule: {
       type: "eliminate_players",
       minEliminations: 2,
-      minTerritoriesHeld: 18,
+      minTerritoriesHeld: 20,
     },
     allowedDoctrines: ["extermination"],
   },
   {
     id: "obj_extermination_warmonger_hegemony",
     descriptionPt:
-      "Senhor da Guerra Supremo (Doutrina de Extermínio): Atingir 100% de Infâmia, eliminar no mínimo 2 generais adversários e controlar 15 territórios.",
+      "Senhor da Guerra Supremo (Doutrina de Extermínio): Controlar 35 territórios pela força bruta.",
     descriptionEn:
-      "Supreme Warmonger (Extermination Doctrine): Reach 100% Infamy, eliminate at least 2 enemy generals, and control 15 territories.",
+      "Supreme Warmonger (Extermination Doctrine): Control 35 territories by sheer military conquest.",
     rule: {
       type: "eliminate_players",
-      minEliminations: 2,
-      requireInfamy: 100,
-      minTerritoriesHeld: 15,
+      minEliminations: 0,
+      minTerritoriesHeld: 35,
     },
     allowedDoctrines: ["extermination"],
   },

@@ -9,6 +9,7 @@ export const enGame: TranslationCatalog = {
   phase_maneuver_desc: "Redeploy divisions between connected friendly territories.",
   phase_pending_conquest: "Military Occupation: Advance divisions to the newly conquered territory",
   phase_deploy_my_turn: "Phase 1 — Deploy +{count} reserve divisions into your territories",
+  phase_deploy_ready: "Phase 1 — Reserves deployed. Advance to the Attack Phase",
   phase_deploy_waiting: "Phase 1 — Strategic reserve deployment",
   phase_attack_my_turn: "Phase 2 — Select an allied territory (≥2 divisions) and an adjacent enemy target",
   phase_attack_waiting: "Phase 2 — Offensive operations in progress",

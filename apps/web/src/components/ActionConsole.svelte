@@ -9,12 +9,14 @@
     checkNavalBlockade,
     getFriendlyPathDistance,
     getMovedInUnits,
+    getPartisanRelocationStatus,
     getTerritoryUnits,
     hasTerritoryBuilding,
     isConnectedByFriendlyPath,
     subtractUnits,
     totalUnits,
   } from "@hegemonia/engine";
+  import type { CombatOddsBadge } from "../odds.js";
   import type {
     AirMissionType,
     GameState,
@@ -37,6 +39,7 @@
     selectedAttackDice: number | null;
     maxAttackerDice: number;
     currentAttackOdds: number | null;
+    attackOddsBadges?: CombatOddsBadge[];
     selectedUnitTotal: number;
     territoryById: Map<string, TerritoryDef>;
     isImmersiveMode?: boolean;
@@ -66,6 +69,7 @@
     selectedAttackDice = $bindable(),
     maxAttackerDice,
     currentAttackOdds,
+    attackOddsBadges = [],
     selectedUnitTotal,
     territoryById,
     isImmersiveMode = false,
@@ -81,6 +85,17 @@
     getOccupationAvailable,
     clearSelection,
   }: Props = $props();
+
+  let partisanStatus = $derived(
+    myPlayerId ? getPartisanRelocationStatus(game, myPlayerId) : null
+  );
+  let showPartisanRelocConfirm = $state(false);
+
+  $effect(() => {
+    if (game.phase !== "deploy" || !partisanStatus?.isDueNow) {
+      showPartisanRelocConfirm = false;
+    }
+  });
 
   function quickSetManeuver(
     mode: "plus1" | "half" | "max" | "clear",
@@ -245,24 +260,34 @@
         </div>
 
       {:else if game.phase === "deploy"}
-        {#if selectedFromId && (myPlayerState?.unplacedArmies ?? 0) > 0}
+        {@const unplacedCount = myPlayerState?.unplacedArmies ?? 0}
+        {@const canSetOrRelocCapital =
+          !game.rulesConfig?.classicMode &&
+          selectedFromId &&
+          (!myPlayerState?.capitalTerritoryId ||
+            (partisanStatus?.isPartisan && partisanStatus.eligibleTerritoryIds.includes(selectedFromId)))}
+        {#if selectedFromId && (unplacedCount > 0 || (partisanStatus?.isPartisan && (partisanStatus.isDueNow || !myPlayerState?.capitalTerritoryId)))}
           {@const fromTerr = game.territories[selectedFromId]}
-          {@const maxD = myPlayerState?.unplacedArmies ?? 1}
+          {@const maxD = unplacedCount > 0 ? unplacedCount : 1}
           <div class="action-popup">
             <div class="popup-head">
               <h4>
-                {t("deploy_prompt", { territory: getTerritoryName(selectedFromId) })}
+                {unplacedCount > 0
+                  ? t("deploy_prompt", { territory: getTerritoryName(selectedFromId) })
+                  : `Base Partisan: ${getTerritoryName(selectedFromId)}`}
               </h4>
               <div class="quick-presets">
-                <button class="preset-btn" onclick={() => (sliderArmies = 1)}>+1</button>
-                {#if maxD >= 3}
-                  <button class="preset-btn" onclick={() => (sliderArmies = Math.max(1, Math.floor(maxD / 2)))}>
-                    50%
+                {#if unplacedCount > 0}
+                  <button class="preset-btn" onclick={() => (sliderArmies = 1)}>+1</button>
+                  {#if maxD >= 3}
+                    <button class="preset-btn" onclick={() => (sliderArmies = Math.max(1, Math.floor(maxD / 2)))}>
+                      50%
+                    </button>
+                  {/if}
+                  <button class="preset-btn" onclick={() => (sliderArmies = maxD)}>
+                    {t("total")} ({maxD})
                   </button>
                 {/if}
-                <button class="preset-btn" onclick={() => (sliderArmies = maxD)}>
-                  {t("total")} ({maxD})
-                </button>
                 <button class="preset-btn" onclick={clearSelection} aria-label={t("close")}>
                   <Icon name="close" size={12} />
                 </button>
@@ -274,20 +299,36 @@
                 <span><strong>Território sob Cerco Militar:</strong> Sem conexão com a Capital. Reforços bloqueados!</span>
               </div>
             {/if}
+            {#if partisanStatus?.isPartisan && partisanStatus.isDueNow}
+              <div class="tactical-intel-alert partisan-warn">
+                <Icon name="capital" size={14} />
+                <span><strong>Base Nômade Partisan:</strong> Relocação obrigatória neste turno para célula adjacente ao inimigo.</span>
+              </div>
+            {/if}
             <div class="slider-row">
-              <input type="range" min="1" max={maxD} disabled={fromTerr?.isEncircled} bind:value={sliderArmies} />
-              {#if !myPlayerState?.capitalTerritoryId}
+              {#if unplacedCount > 0}
+                <input type="range" min="1" max={maxD} disabled={fromTerr?.isEncircled} bind:value={sliderArmies} />
+              {/if}
+              {#if canSetOrRelocCapital && fromTerr?.ownerId === myPlayerId && myPlayerState?.capitalTerritoryId !== selectedFromId}
                 <button
                   class="btn secondary-btn select-cap-btn"
-                  title={t("capital_select_hint")}
-                  onclick={() => sendAction({ type: "select_capital", territoryId: selectedFromId })}
+                  title={partisanStatus?.isPartisan ? "Relocar Célula de Comando Partisan para este território" : t("capital_select_hint")}
+                  onclick={() => {
+                    sendAction({ type: "select_capital", territoryId: selectedFromId });
+                    showPartisanRelocConfirm = false;
+                  }}
                 >
-                  <Icon name="capital" size={13} /> {t("capital_select_btn")}
+                  <Icon name="capital" size={13} />
+                  {partisanStatus?.isPartisan && myPlayerState?.capitalTerritoryId
+                    ? "Relocar Base Partisan"
+                    : t("capital_select_btn")}
                 </button>
               {/if}
-              <button class="btn primary-gold" disabled={fromTerr?.isEncircled} onclick={confirmDeploy}>
-                <Icon name="phase-deploy" size={14} /> {t("deploy_confirm", { count: sliderArmies })}
-              </button>
+              {#if unplacedCount > 0}
+                <button class="btn primary-gold" disabled={fromTerr?.isEncircled} onclick={confirmDeploy}>
+                  <Icon name="phase-deploy" size={14} /> {t("deploy_confirm", { count: sliderArmies })}
+                </button>
+              {/if}
             </div>
           </div>
         {/if}
@@ -405,6 +446,13 @@
               <div class="odds-bar">
                 <div class="odds-fill" style="width: {currentAttackOdds}%"></div>
               </div>
+              {#if attackOddsBadges.length > 0}
+                <div class="odds-modifiers-row">
+                  {#each attackOddsBadges as badge}
+                    <span class="odds-mod-chip {badge.kind}">{badge.label}</span>
+                  {/each}
+                </div>
+              {/if}
             {/if}
 
             {#if canArtillery || canAir}
@@ -484,7 +532,13 @@
                 {#if maxM < 1}
                   Esta província possui apenas 1 divisão (guarnição mínima) ou tropas já movimentadas. Selecione outra província aliada com mais tropas.
                 {:else}
-                  Clique em um território aliado conectado (por terra, mar ou aeródromo) no mapa para traçar a rota de reagrupamento ({maxM} div disponíveis).
+                  Clique em um território iluminado para reagrupar ({maxM} div disponíveis):
+                  <span class="range-legend-inline">
+                    <span class="rl-dot c1"></span>1 salto (Inf/Art)
+                    <span class="rl-dot c2"></span>2 saltos (Tanques)
+                    <span class="rl-dot c3"></span>3 saltos (Navios)
+                    <span class="rl-dot cair"></span>Aeródromo (Aviões/Ponte)
+                  </span>
                 {/if}
               </p>
               <div class="maneuver-prompt-actions">
@@ -543,6 +597,17 @@
             </div>
 
             <!-- Dual Contrasting Cards: Origem vs Destino (HEGEM-97) -->
+            <div class="maneuver-range-pill-row">
+              {#if isAirlift}
+                <span class="maneuver-range-pill cair">Ponte Aérea entre Aeródromos (Infantaria / Aeronaves)</span>
+              {:else if dist === 1 || isNeighbor}
+                <span class="maneuver-range-pill c1">Distância: 1 salto (Todas as unidades permitidas)</span>
+              {:else if dist === 2}
+                <span class="maneuver-range-pill c2">Distância: 2 saltos (Tanques, Marinha ou Aeronaves)</span>
+              {:else if dist === 3}
+                <span class="maneuver-range-pill c3">Distância: 3 saltos (Marinha ou Aeronaves)</span>
+              {/if}
+            </div>
             <div class="maneuver-dual-cards">
               <div class="maneuver-card from-card">
                 <div class="card-tag from">ORIGEM</div>
@@ -736,16 +801,43 @@
       <div class="phase-action-slot">
         {#if isMyTurn && !game.winnerId}
           {#if game.phase === "deploy" && game.round > 1}
-            <button
-              class="btn secondary phase-cta-btn"
-              disabled={(myPlayerState?.unplacedArmies ?? 0) > 0}
-              title={(myPlayerState?.unplacedArmies ?? 0) > 0
-                ? "Posicione todas as tropas de reforço antes de avançar para o ataque"
-                : "Avançar para a fase de ataque"}
-              onclick={() => sendAction({ type: "end_deploy" })}
-            >
-              {t("advance_to_attack")}
-            </button>
+            {#if showPartisanRelocConfirm}
+              <div class="partisan-confirm-inline">
+                <span>Relocação Partisan pendente!</span>
+                <button
+                  class="btn outline-button phase-cta-btn"
+                  onclick={() => {
+                    showPartisanRelocConfirm = false;
+                    sendAction({ type: "end_deploy" });
+                  }}
+                >
+                  Avançar Mesmo Assim
+                </button>
+                <button
+                  class="btn secondary phase-cta-btn"
+                  onclick={() => (showPartisanRelocConfirm = false)}
+                >
+                  Cancelar
+                </button>
+              </div>
+            {:else}
+              <button
+                class="btn secondary phase-cta-btn"
+                disabled={(myPlayerState?.unplacedArmies ?? 0) > 0}
+                title={(myPlayerState?.unplacedArmies ?? 0) > 0
+                  ? "Posicione todas as tropas de reforço antes de avançar para o ataque"
+                  : "Avançar para a fase de ataque"}
+                onclick={() => {
+                  if (partisanStatus?.isPartisan && partisanStatus.isDueNow) {
+                    showPartisanRelocConfirm = true;
+                  } else {
+                    sendAction({ type: "end_deploy" });
+                  }
+                }}
+              >
+                {t("advance_to_attack")}
+              </button>
+            {/if}
           {:else if game.phase === "attack" && !game.pendingConquest}
             <button class="btn secondary phase-cta-btn" onclick={() => sendAction({ type: "end_attack" })}>
               {t("advance_to_maneuver")}
@@ -1413,5 +1505,92 @@
     .phase-action-slot button {
       width: 100%;
     }
+  }
+
+  .odds-modifiers-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin: 4px 0 6px;
+  }
+  .odds-mod-chip {
+    font-size: 0.62rem;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    background: rgba(15, 23, 42, 0.78);
+    color: #cbd5e1;
+  }
+  .odds-mod-chip.buff {
+    border-color: rgba(16, 185, 129, 0.45);
+    color: #6ee7b7;
+    background: rgba(16, 185, 129, 0.12);
+  }
+  .odds-mod-chip.debuff {
+    border-color: rgba(239, 68, 68, 0.45);
+    color: #fca5a5;
+    background: rgba(239, 68, 68, 0.12);
+  }
+  .tactical-intel-alert.partisan-warn {
+    background: rgba(245, 158, 11, 0.14);
+    border-color: rgba(245, 158, 11, 0.5);
+    color: #fde047;
+  }
+  .range-legend-inline {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+    font-size: 0.66rem;
+    color: #cbd5e1;
+  }
+  .rl-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 2px;
+  }
+  .rl-dot.c1 { background: #38bdf8; }
+  .rl-dot.c2 { background: #fbbf24; }
+  .rl-dot.c3 { background: #2dd4bf; }
+  .rl-dot.cair { background: #c084fc; }
+  .maneuver-range-pill-row {
+    margin-bottom: 6px;
+  }
+  .maneuver-range-pill {
+    display: inline-block;
+    font-size: 0.65rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid rgba(56, 189, 248, 0.4);
+    background: rgba(56, 189, 248, 0.12);
+    color: #bae6fd;
+  }
+  .maneuver-range-pill.c2 {
+    border-color: rgba(251, 191, 36, 0.45);
+    background: rgba(251, 191, 36, 0.12);
+    color: #fde047;
+  }
+  .maneuver-range-pill.c3 {
+    border-color: rgba(45, 212, 191, 0.45);
+    background: rgba(45, 212, 191, 0.12);
+    color: #99f6e4;
+  }
+  .maneuver-range-pill.cair {
+    border-color: rgba(192, 132, 252, 0.45);
+    background: rgba(192, 132, 252, 0.12);
+    color: #e9d5ff;
+  }
+  .partisan-confirm-inline {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.66rem;
+    color: #fde047;
+    font-weight: 700;
   }
 </style>

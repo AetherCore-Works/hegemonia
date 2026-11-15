@@ -28,9 +28,11 @@
     GRATICULE_SVG_PATH,
   } from "@hegemonia/maps";
   import {
+    checkNavalBlockade,
     hasTerritoryBuilding,
+    getPartisanRelocationStatus,
+    getReachableManeuverDistances,
     getTerritoryBuildingLevel,
-    getReachableManeuverTargets,
   } from "@hegemonia/engine";
   import Icon from "./Icon.svelte";
   import { t } from "../i18n/index.svelte";
@@ -436,9 +438,29 @@
     new Set(combatAnimations.map((a) => a.toTerritoryId))
   );
 
-  const reachableManeuverTargets = $derived(
+  const maneuverReach = $derived(
     game.phase === "maneuver" && selectedFromId && myPlayerId
-      ? getReachableManeuverTargets(game, selectedFromId, myPlayerId)
+      ? getReachableManeuverDistances(game, selectedFromId, myPlayerId, CLASSIC_MAP)
+      : { landDistances: {} as Record<string, number>, airfieldTargets: [] as string[], aircraftTargets: [] as string[], maxLandDistance: 0 }
+  );
+
+  const reachableManeuverTargets = $derived(
+    new Set<string>([
+      ...Object.keys(maneuverReach.landDistances),
+      ...maneuverReach.airfieldTargets,
+      ...maneuverReach.aircraftTargets,
+    ])
+  );
+
+  const partisanRelocStatus = $derived(
+    myPlayerId ? getPartisanRelocationStatus(game, myPlayerId, CLASSIC_MAP) : null
+  );
+
+  const partisanEligibleIds = $derived(
+    game.phase === "deploy" &&
+    partisanRelocStatus?.isPartisan &&
+    partisanRelocStatus.isDueNow
+      ? new Set(partisanRelocStatus.eligibleTerritoryIds)
       : new Set<string>()
   );
 
@@ -698,14 +720,23 @@
           {#each DIRECT_SEA_LINKS as [a, b]}
             {@const ta = territoryById.get(a)!}
             {@const tb = territoryById.get(b)!}
+            {@const seaBlockaded = Boolean(
+              myPlayerId &&
+                (checkNavalBlockade(game, a, b, myPlayerId).isBlockaded ||
+                  checkNavalBlockade(game, b, a, myPlayerId).isBlockaded)
+            )}
             <line
               x1={ta.center[0]}
               y1={ta.center[1]}
               x2={tb.center[0]}
               y2={tb.center[1]}
-              stroke={effectiveBaseMode === "cartographic" ? "rgba(224, 242, 254, 0.65)" : "#64748b"}
-              stroke-dasharray="3.5,4"
-              stroke-width="1.35"
+              stroke={seaBlockaded
+                ? "#ef4444"
+                : effectiveBaseMode === "cartographic"
+                  ? "rgba(224, 242, 254, 0.65)"
+                  : "#64748b"}
+              stroke-dasharray={seaBlockaded ? "4,2.5" : "3.5,4"}
+              stroke-width={seaBlockaded ? "2.1" : "1.35"}
               pointer-events="none"
             />
           {/each}
@@ -750,6 +781,23 @@
                 Boolean(selectedFromId) &&
                 t.id !== selectedFromId &&
                 reachableManeuverTargets.has(t.id)}
+              {@const maneuverDist = isManeuverDest ? (maneuverReach.landDistances[t.id] ?? null) : null}
+              {@const isAirfieldManeuverTarget =
+                isManeuverDest &&
+                maneuverDist === null &&
+                (maneuverReach.airfieldTargets.includes(t.id) ||
+                  maneuverReach.aircraftTargets.includes(t.id))}
+              {@const isPartisanRelocTarget = partisanEligibleIds.has(t.id)}
+              {@const maneuverStrokeColor =
+                maneuverDist === 1
+                  ? "#38bdf8"
+                  : maneuverDist === 2
+                    ? "#fbbf24"
+                    : maneuverDist === 3
+                      ? "#2dd4bf"
+                      : isAirfieldManeuverTarget
+                        ? "#c084fc"
+                        : "#38bdf8"}
               {@const isEligibleManeuverOrigin =
                 game.phase === "maneuver" &&
                 !selectedFromId &&
@@ -799,6 +847,7 @@
                 <!-- Base Political Fill + Frontier Border -->
                 <path
                   class:maneuver-dest-pulse={isManeuverDest}
+                  class:partisan-reloc-pulse={isPartisanRelocTarget && !isSelected}
                   class:objective-preview-aura={isPreviewTarget}
                   d={t.svgPath}
                   fill={isPreviewTarget
@@ -823,8 +872,10 @@
                     ? "#facc15"
                     : isSelected
                       ? "#ffffff"
-                      : isManeuverDest
-                        ? "#38bdf8"
+                      : isPartisanRelocTarget
+                        ? "#f59e0b"
+                        : isManeuverDest
+                          ? maneuverStrokeColor
                         : isEligibleManeuverOrigin
                           ? "#38bdf8"
                           : isValidTarget
@@ -842,6 +893,8 @@
                     ? "2.8"
                     : isSelected
                       ? "2.6"
+                      : isPartisanRelocTarget
+                        ? "2.8"
                       : isManeuverDest
                         ? "2.8"
                         : isEligibleManeuverOrigin
@@ -853,7 +906,7 @@
                               : effectiveBaseMode === "cartographic"
                                 ? "1.6"
                                 : "1.25"}
-                  stroke-dasharray={isEligibleManeuverOrigin ? "4,3" : "none"}
+                  stroke-dasharray={isAirfieldManeuverTarget ? "5,3" : isEligibleManeuverOrigin ? "4,3" : "none"}
                   stroke-linejoin="round"
                   filter={isPreviewTarget || isSelected || isValidTarget
                     ? "url(#glow-gold)"
@@ -1210,6 +1263,56 @@
                     <g transform="translate(13.5, 4.5)" pointer-events="none">
                       <circle cx="0" cy="0" r="3.8" fill="#422006" stroke="#eab308" stroke-width="1.1" />
                       <Icon name="blitzkrieg" size={5.2} x={-2.6} y={-2.6} color="#fef08a" strokeWidth={2.2} />
+                    </g>
+                  {/if}
+
+                  <!-- Air / Navy Stationed Indicator (Extra #1) -->
+                  {#if (tState.units?.aircraft ?? 0) > 0 || (tState.units?.navy ?? 0) > 0}
+                    <g transform="translate(13.5, -4.5)" pointer-events="none">
+                      <circle
+                        cx="0"
+                        cy="0"
+                        r="4.0"
+                        fill="#0f172a"
+                        stroke={(tState.units?.aircraft ?? 0) > 0 ? "#38bdf8" : "#22d3ee"}
+                        stroke-width="1.05"
+                      />
+                      <Icon
+                        name={(tState.units?.aircraft ?? 0) > 0 ? "aircraft" : "navy"}
+                        size={5.2}
+                        x={-2.6}
+                        y={-2.6}
+                        color="#7dd3fc"
+                        strokeWidth={2}
+                      />
+                    </g>
+                  {/if}
+
+                  <!-- Doomsday Citadel (Wonder) Pulsing Map Badge (HEGEM-161 / Extra #3) -->
+                  {#if hasTerritoryBuilding(tState, "wonder")}
+                    {@const wonderLabel =
+                      owner?.wonderStatus === "countdown"
+                        ? `FIM ${owner.wonderCountdownLeft ?? 6}t`
+                        : `OBRA ${owner?.wonderConstructionLeft ?? 2}t`}
+                    <g transform="translate(0, -16.8)" pointer-events="none">
+                      <rect
+                        x="-16"
+                        y="-4.6"
+                        width="32"
+                        height="9.2"
+                        rx="3"
+                        fill="#451a03"
+                        stroke="#facc15"
+                        stroke-width="1.2"
+                      />
+                      <text
+                        x="0"
+                        y="2.1"
+                        text-anchor="middle"
+                        fill="#fef08a"
+                        font-size="5.4"
+                        font-weight="800"
+                      >{wonderLabel}</text>
                     </g>
                   {/if}
 
@@ -2444,6 +2547,22 @@
   /* --- HEGEM-102: HOI4-Style Smooth Auto-Zoom & Camera Pan Rig --- */
   .camera-rig.smooth-transition {
     transition: transform 450ms cubic-bezier(0.2, 0.8, 0.25, 1);
+  }
+  .partisan-reloc-pulse {
+    animation: pulse-partisan-amber 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse-partisan-amber {
+    0%, 100% {
+      stroke: #f59e0b;
+      stroke-width: 2.5;
+      stroke-opacity: 0.78;
+    }
+    50% {
+      stroke: #fde047;
+      stroke-width: 3.6;
+      stroke-opacity: 1;
+      filter: drop-shadow(0 0 6px rgba(245, 158, 11, 0.95));
+    }
   }
 
   /* --- HEGEM-144: Objective Selection Map Preview Glow --- */

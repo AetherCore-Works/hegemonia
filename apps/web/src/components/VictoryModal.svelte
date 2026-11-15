@@ -5,6 +5,7 @@
     type CompetitionMode,
     type GameState,
     type MatchXpBreakdown,
+    type PlayerColor,
     type PlayerState,
   } from "@hegemonia/shared";
   import { i18n, t } from "../i18n/index.svelte";
@@ -38,6 +39,111 @@
   } = $props();
 
   let minimized = $state(false);
+  let activeTab = $state<"summary" | "timeline" | "awards">("summary");
+  let timelineMetric = $state<"territories" | "armies" | "economy">("territories");
+
+  function getSnapshotMetricValue(
+    snap: { players: Record<string, { territories: number; armies: number; money: number; resourcesTotal: number; combatsWon: number }> },
+    playerId: string,
+    metric: "territories" | "armies" | "economy"
+  ): number {
+    const entry = snap.players[playerId];
+    if (!entry) return 0;
+    if (metric === "territories") return entry.territories;
+    if (metric === "armies") return entry.armies;
+    return entry.money + entry.resourcesTotal * 2;
+  }
+
+  const FACTION_STROKE_COLORS: Record<PlayerColor, string> = {
+    blue: "#3b82f6",
+    red: "#ef4444",
+    green: "#10b981",
+    dark_green: "#22c55e",
+    yellow: "#facc15",
+    orange: "#f97316",
+    pink: "#ec4899",
+    purple: "#a855f7",
+    black: "#cbd5e1",
+    white: "#f8fafc",
+  };
+
+  let timelineSnapshots = $derived.by(() => {
+    if (game.roundHistory && game.roundHistory.length > 0) {
+      return game.roundHistory;
+    }
+    const playersObj: Record<
+      string,
+      { territories: number; armies: number; money: number; resourcesTotal: number; combatsWon: number }
+    > = {};
+    for (const row of playerMetrics) {
+      const r = row.player.resources ?? { money: 0, steel: 0, oil: 0, gold: 0 };
+      playersObj[row.player.id] = {
+        territories: row.terrCount,
+        armies: row.totalArmies,
+        money: r.money,
+        resourcesTotal: r.steel + r.oil + r.gold,
+        combatsWon: row.player.analytics?.combatsWon ?? 0,
+      };
+    }
+    return [
+      {
+        round: game.round,
+        worldTension: game.worldTension ?? 0,
+        players: playersObj,
+      },
+    ];
+  });
+
+  let timelineMaxValue = $derived.by(() => {
+    let maxVal = 1;
+    for (const snap of timelineSnapshots) {
+      for (const p of game.players) {
+        const val = getSnapshotMetricValue(snap, p.id, timelineMetric);
+        if (val > maxVal) maxVal = val;
+      }
+    }
+    return maxVal;
+  });
+
+  let matchAwards = $derived.by(() => {
+    if (playerMetrics.length === 0) return [];
+    const byTerr = [...playerMetrics].sort((a, b) => b.terrCount - a.terrCount);
+    const byArmy = [...playerMetrics].sort((a, b) => b.totalArmies - a.totalArmies);
+    const byEcon = [...playerMetrics].sort((a, b) => {
+      const ra = a.player.resources ?? { money: 0, steel: 0, oil: 0, gold: 0 };
+      const rb = b.player.resources ?? { money: 0, steel: 0, oil: 0, gold: 0 };
+      const na = ra.money + ra.steel * 2 + ra.oil * 2 + ra.gold * 3;
+      const nb = rb.money + rb.steel * 2 + rb.oil * 2 + rb.gold * 3;
+      return nb - na;
+    });
+    const topConqueror = byTerr[0];
+    const topMilitary = byArmy[0];
+    const topMagnate = byEcon[0];
+    const econRes = topMagnate.player.resources ?? { money: 0, steel: 0, oil: 0, gold: 0 };
+    const topEconScore =
+      econRes.money + econRes.steel * 2 + econRes.oil * 2 + econRes.gold * 3;
+
+    return [
+      {
+        title: "Conquistador Supremo",
+        subtitle: "Maior domínio territorial ao fim da guerra",
+        player: topConqueror.player,
+        stat: `${topConqueror.terrCount} territórios (${topConqueror.sharePct}%)`,
+      },
+      {
+        title: "MVP Militar",
+        subtitle: "Maior força armada mobilizada no teatro final",
+        player: topMilitary.player,
+        stat: `${topMilitary.totalArmies} divisões ativas`,
+      },
+      {
+        title: "Magnata Econômico",
+        subtitle: "Maior reserva estratégica acumulada",
+        player: topMagnate.player,
+        stat: `$${topEconScore} em patrimônio líquido`,
+      },
+    ];
+  });
 
   let winner = $derived(game.players.find((p) => p.id === game.winnerId) ?? null);
   let isWinnerMe = $derived(Boolean(winner && winner.id === myPlayerId));
@@ -121,6 +227,34 @@
       </div>
 
       <div class="victory-body">
+        <div class="victory-tabs" role="tablist">
+          <button
+            type="button"
+            class="v-tab-btn"
+            class:active={activeTab === "summary"}
+            onclick={() => { sound.playClick(); activeTab = "summary"; }}
+          >
+            Resumo & Classificação
+          </button>
+          <button
+            type="button"
+            class="v-tab-btn"
+            class:active={activeTab === "timeline"}
+            onclick={() => { sound.playClick(); activeTab = "timeline"; }}
+          >
+            Linha do Tempo ({timelineSnapshots.length}R)
+          </button>
+          <button
+            type="button"
+            class="v-tab-btn"
+            class:active={activeTab === "awards"}
+            onclick={() => { sound.playClick(); activeTab = "awards"; }}
+          >
+            Condecorações
+          </button>
+        </div>
+
+        {#if activeTab === "summary"}
         {#if winner}
           <div class="winner-showcase">
             <FactionFlag color={winner.color} width={44} height={28} />
@@ -226,13 +360,132 @@
                       : t("xp_ineligible_guest")}
               </span>
             </div>
-          {:else}
+        {:else}
             <div class="xp-ineligible-box guest">
               <Icon name="user" size={14} />
               <span>{t("xp_ineligible_guest")}</span>
             </div>
           {/if}
         </div>
+        {:else if activeTab === "timeline"}
+          <div class="timeline-aar-box">
+            <div class="timeline-header">
+              <h4>Evolução Estratégica por Rodada</h4>
+              <div class="timeline-metric-pills">
+                <button
+                  type="button"
+                  class="tm-pill"
+                  class:active={timelineMetric === "territories"}
+                  onclick={() => (timelineMetric = "territories")}
+                >
+                  Territórios
+                </button>
+                <button
+                  type="button"
+                  class="tm-pill"
+                  class:active={timelineMetric === "armies"}
+                  onclick={() => (timelineMetric = "armies")}
+                >
+                  Divisões
+                </button>
+                <button
+                  type="button"
+                  class="tm-pill"
+                  class:active={timelineMetric === "economy"}
+                  onclick={() => (timelineMetric = "economy")}
+                >
+                  Economia
+                </button>
+              </div>
+            </div>
+
+            <svg class="timeline-svg" viewBox="0 0 560 185" role="img" aria-label="Gráfico de evolução da partida">
+              {#each [0, 0.25, 0.5, 0.75, 1] as step}
+                {@const gy = 155 - step * 130}
+                <line x1="36" y1={gy} x2="544" y2={gy} stroke="rgba(148,163,184,0.16)" stroke-dasharray="3,3" />
+                <text x="6" y={gy + 4} fill="#64748b" font-size="9">
+                  {Math.round(timelineMaxValue * step)}
+                </text>
+              {/each}
+
+              {#each game.players as p}
+                {@const points = timelineSnapshots
+                  .map((snap, idx) => {
+                    const x =
+                      timelineSnapshots.length <= 1
+                        ? 290
+                        : 40 + (idx / (timelineSnapshots.length - 1)) * 500;
+                    const val = getSnapshotMetricValue(snap, p.id, timelineMetric);
+                    const y = 155 - (val / Math.max(1, timelineMaxValue)) * 130;
+                    return `${x.toFixed(1)},${y.toFixed(1)}`;
+                  })
+                  .join(" ")}
+                <polyline
+                  fill="none"
+                  stroke={FACTION_STROKE_COLORS[p.color] ?? "#94a3b8"}
+                  stroke-width={p.id === game.winnerId ? "3" : "2"}
+                  stroke-linejoin="round"
+                  points={points}
+                />
+                {#each timelineSnapshots as snap, idx}
+                  {@const cx =
+                    timelineSnapshots.length <= 1
+                      ? 290
+                      : 40 + (idx / (timelineSnapshots.length - 1)) * 500}
+                  {@const ptVal = getSnapshotMetricValue(snap, p.id, timelineMetric)}
+                  {@const cy =
+                    155 - (ptVal / Math.max(1, timelineMaxValue)) * 130}
+                  <circle
+                    cx={cx}
+                    cy={cy}
+                    r={p.id === game.winnerId ? "3.5" : "2.5"}
+                    fill={FACTION_STROKE_COLORS[p.color] ?? "#94a3b8"}
+                  >
+                    <title>R{snap.round} • {p.name}: {ptVal}</title>
+                  </circle>
+                {/each}
+              {/each}
+
+              {#each timelineSnapshots as snap, idx}
+                {#if timelineSnapshots.length <= 12 || idx % Math.ceil(timelineSnapshots.length / 10) === 0 || idx === timelineSnapshots.length - 1}
+                  {@const tx =
+                    timelineSnapshots.length <= 1
+                      ? 290
+                      : 40 + (idx / (timelineSnapshots.length - 1)) * 500}
+                  <text x={tx} y="175" text-anchor="middle" fill="#94a3b8" font-size="9">
+                    R{snap.round}
+                  </text>
+                {/if}
+              {/each}
+            </svg>
+
+            <div class="timeline-legend">
+              {#each game.players as p}
+                <span class="tl-legend-item">
+                  <span class="tl-swatch" style="background: {FACTION_STROKE_COLORS[p.color]};"></span>
+                  <span>{p.name}</span>
+                </span>
+              {/each}
+            </div>
+          </div>
+        {:else if activeTab === "awards"}
+          <div class="awards-aar-grid">
+            {#each matchAwards as award}
+              <div class="award-card">
+                <div class="award-head">
+                  <Icon name="crown" size={16} />
+                  <strong>{award.title}</strong>
+                </div>
+                <small class="award-sub">{award.subtitle}</small>
+                <div class="award-winner-row">
+                  <FactionFlag color={award.player.color} width={22} height={14} />
+                  <span>{award.player.name}</span>
+                </div>
+                <strong class="award-stat">{award.stat}</strong>
+              </div>
+            {/each}
+          </div>
+        {/if}
 
         <div class="crypto-audit-box">
           <div>
@@ -638,5 +891,135 @@
   .v-min-actions {
     display: flex;
     gap: 8px;
+  }
+
+  .victory-tabs {
+    display: flex;
+    gap: 6px;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+    padding-bottom: 8px;
+  }
+  .v-tab-btn {
+    padding: 5px 12px;
+    border-radius: 5px;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    background: rgba(15, 23, 42, 0.72);
+    color: #94a3b8;
+    font-size: 0.72rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .v-tab-btn.active {
+    border-color: #eab308;
+    background: rgba(234, 179, 8, 0.16);
+    color: #fef08a;
+  }
+  .timeline-aar-box {
+    background: rgba(4, 9, 19, 0.75);
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 7px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .timeline-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .timeline-header h4 {
+    margin: 0;
+    font-size: 0.82rem;
+    color: #f8fafc;
+  }
+  .timeline-metric-pills {
+    display: flex;
+    gap: 4px;
+  }
+  .tm-pill {
+    padding: 3px 8px;
+    border-radius: 4px;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    background: rgba(15, 23, 42, 0.85);
+    color: #cbd5e1;
+    font-size: 0.66rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .tm-pill.active {
+    border-color: #38bdf8;
+    background: rgba(56, 189, 248, 0.16);
+    color: #bae6fd;
+  }
+  .timeline-svg {
+    width: 100%;
+    height: auto;
+    background: rgba(7, 12, 23, 0.88);
+    border: 1px solid rgba(148, 163, 184, 0.16);
+    border-radius: 5px;
+  }
+  .timeline-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    font-size: 0.68rem;
+    color: #cbd5e1;
+  }
+  .tl-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .tl-swatch {
+    width: 10px;
+    height: 3px;
+    border-radius: 2px;
+  }
+  .awards-aar-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .award-card {
+    background: rgba(9, 15, 28, 0.85);
+    border: 1px solid rgba(234, 179, 8, 0.35);
+    border-radius: 7px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .award-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: #fde047;
+    font-size: 0.78rem;
+  }
+  .award-sub {
+    font-size: 0.65rem;
+    color: #94a3b8;
+    line-height: 1.3;
+  }
+  .award-winner-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+    color: #f8fafc;
+    font-size: 0.76rem;
+    font-weight: 700;
+  }
+  .award-stat {
+    color: #6ee7b7;
+    font-size: 0.72rem;
+  }
+  @media (max-width: 640px) {
+    .awards-aar-grid {
+      grid-template-columns: 1fr;
+    }
   }
 </style>

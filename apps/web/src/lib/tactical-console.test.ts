@@ -349,9 +349,9 @@ describe("Left Slide-Over Territory Command & Military Engineering Dossier", () 
 
     const topBarCode = readFileSync(resolve(__dirname, "../components/TopBar.svelte"), "utf-8");
     expect(topBarCode).toContain('data-testid="toggle-ping-mode"');
-    expect(topBarCode).toContain("aircraftOriginId");
-    expect(topBarCode).toContain("aircraftDestId");
-    expect(topBarCode).toContain("aircraftTransferQty");
+    expect(topBarCode).toContain("coalitionAirFromId");
+    expect(topBarCode).toContain("coalitionAirToId");
+    expect(topBarCode).toContain("coalitionAirQty");
     expect(topBarCode).toContain("lendLeaseBlockedByExtermination");
     expect(topBarCode).toContain("coalition-locked-box");
 

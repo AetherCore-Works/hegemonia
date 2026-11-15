@@ -14,18 +14,23 @@
   } from "../i18n/content.svelte";
   import { sound } from "../audio.js";
   import { ui } from "../lib/ui.svelte";
-  import { CLASSIC_MAP, ASIA_SUBREGIONS } from "@hegemonia/maps";
+  import { CLASSIC_MAP, ASIA_SUBREGIONS, DIRECT_SEA_LINKS } from "@hegemonia/maps";
   import {
     calculateTurnEconomy,
+    checkNavalBlockade,
     DEFAULT_MARKET_CONFIG,
     findValidTradeTriplet,
+    getPartisanRelocationStatus,
+    getTerritoryUnits,
     getTradeBonusArmies,
     hasTerritoryBuilding,
     playerHasMarket,
+    previewMarketTrade,
   } from "@hegemonia/engine";
   import {
     getMilitaryRank,
     type GameState,
+    type PauseStateView,
     type PlayerColor,
     type PlayerState,
     type ResourceType,
@@ -107,6 +112,9 @@
     onFocusTerritory?: (territoryId: string) => void;
     autoCameraFocus?: boolean;
     onToggleAutoCameraFocus?: (val: boolean) => void;
+    amIHost?: boolean;
+    pauseState?: PauseStateView | null;
+    onTogglePause?: () => void;
     onReopenTutorial?: () => void;
   }
 
@@ -140,6 +148,9 @@
     onFocusTerritory,
     autoCameraFocus = true,
     onToggleAutoCameraFocus,
+    amIHost = false,
+    pauseState = null,
+    onTogglePause,
     onReopenTutorial,
   }: Props = $props();
 
@@ -149,6 +160,28 @@
   let marketBatchQty = $state(1);
   let showExitConfirmModal = $state(false);
   let botTakeoverMode = $state<"after_2_turns" | "immediate">("after_2_turns");
+  let pauseCountdownSec = $state(0);
+
+  let isClassicMode = $derived(Boolean(game.rulesConfig?.classicMode));
+  let partisanStatus = $derived(
+    myPlayerId ? getPartisanRelocationStatus(game, myPlayerId, CLASSIC_MAP) : null
+  );
+
+  $effect(() => {
+    if (!pauseState?.paused || !pauseState.resumeDeadline) {
+      pauseCountdownSec = 0;
+      return;
+    }
+    const update = () => {
+      pauseCountdownSec = Math.max(
+        0,
+        Math.ceil(((pauseState?.resumeDeadline ?? 0) - Date.now()) / 1000)
+      );
+    };
+    update();
+    const id = setInterval(update, 500);
+    return () => clearInterval(id);
+  });
 
   // HEGEM-62: Backward compatibility bridge for callers using legacy mapMode
   $effect(() => {
@@ -236,90 +269,6 @@
     ),
   );
 
-  let myAircraftTerritories = $derived.by(() => {
-    if (!game || !myPlayerId) return [];
-    return Object.values(game.territories)
-      .filter(
-        (t) =>
-          t.ownerId === myPlayerId &&
-          (t.units?.aircraft ?? 0) >= 1 &&
-          t.armies >= 2,
-      )
-      .sort((a, b) => {
-        const aAir = hasTerritoryBuilding(a, "airfield") ? 1 : 0;
-        const bAir = hasTerritoryBuilding(b, "airfield") ? 1 : 0;
-        if (aAir !== bAir) return bAir - aAir;
-        return (b.units?.aircraft ?? 0) - (a.units?.aircraft ?? 0);
-      });
-  });
-
-  let targetPartnerTerritories = $derived.by(() => {
-    if (!game || !activeDiplomacyTarget) return [];
-    return Object.values(game.territories)
-      .filter((t) => t.ownerId === activeDiplomacyTarget.id)
-      .sort((a, b) => {
-        const aCap = activeDiplomacyTarget.capitalTerritoryId === a.id ? 1 : 0;
-        const bCap = activeDiplomacyTarget.capitalTerritoryId === b.id ? 1 : 0;
-        if (aCap !== bCap) return bCap - aCap;
-        const aAir = hasTerritoryBuilding(a, "airfield") ? 1 : 0;
-        const bAir = hasTerritoryBuilding(b, "airfield") ? 1 : 0;
-        if (aAir !== bAir) return bAir - aAir;
-        return getTerritoryName(a.id).localeCompare(getTerritoryName(b.id));
-      });
-  });
-
-  let aircraftOriginId = $state<string>("");
-  let aircraftDestId = $state<string>("");
-  let aircraftTransferQty = $state<number>(1);
-  let lendLeaseAmountScale = $state<1 | 3>(1);
-
-  let selectedAircraftOrigin = $derived(
-    myAircraftTerritories.find((t) => t.id === aircraftOriginId) ??
-      myAircraftTerritories[0] ??
-      null,
-  );
-  let selectedAircraftDest = $derived(
-    targetPartnerTerritories.find((t) => t.id === aircraftDestId) ??
-      targetPartnerTerritories[0] ??
-      null,
-  );
-  let maxTransferableAircraft = $derived.by(() => {
-    if (!selectedAircraftOrigin) return 1;
-    return Math.max(
-      1,
-      Math.min(
-        selectedAircraftOrigin.units?.aircraft ?? 1,
-        selectedAircraftOrigin.armies - 1,
-      ),
-    );
-  });
-
-  $effect(() => {
-    if (selectedAircraftOrigin && aircraftOriginId !== selectedAircraftOrigin.id) {
-      aircraftOriginId = selectedAircraftOrigin.id;
-    }
-    if (!selectedAircraftOrigin && aircraftOriginId !== "") {
-      aircraftOriginId = "";
-    }
-  });
-
-  $effect(() => {
-    if (selectedAircraftDest && aircraftDestId !== selectedAircraftDest.id) {
-      aircraftDestId = selectedAircraftDest.id;
-    }
-    if (!selectedAircraftDest && aircraftDestId !== "") {
-      aircraftDestId = "";
-    }
-  });
-
-  $effect(() => {
-    if (aircraftTransferQty > maxTransferableAircraft) {
-      aircraftTransferQty = maxTransferableAircraft;
-    } else if (aircraftTransferQty < 1) {
-      aircraftTransferQty = 1;
-    }
-  });
-
   let myEconomyIncome = $derived.by(() => {
     if (!game || !myPlayerId) return null;
     return calculateTurnEconomy(game, myPlayerId);
@@ -332,6 +281,56 @@
   let nextTradeBonus = $derived(
     game ? getTradeBonusArmies(game.tradeCount) : 4,
   );
+
+  let hasActiveNavalBlockade = $derived.by(() => {
+    if (!game || !myPlayerId) return false;
+    return DIRECT_SEA_LINKS.some(([a, b]) => {
+      const ta = game.territories[a];
+      const tb = game.territories[b];
+      if (!ta || !tb) return false;
+      if (ta.ownerId !== myPlayerId && tb.ownerId !== myPlayerId) return false;
+      return (
+        checkNavalBlockade(game, a, b, myPlayerId).isBlockaded ||
+        checkNavalBlockade(game, b, a, myPlayerId).isBlockaded
+      );
+    });
+  });
+
+  let nextTradeSummary = $derived.by(() => {
+    const docId = myPlayerState?.doctrineId;
+    const b = nextTradeBonus;
+    if (game?.rulesConfig?.classicMode) {
+      return `+${b} ${t("divisions", { count: b })}`;
+    }
+    if (docId === "mass_assault") {
+      return `+${b + 2} Infantarias`;
+    }
+    if (docId === "tall_sovereign" || docId === "defense_in_depth") {
+      const money = b * 3;
+      const steel = Math.max(2, Math.floor(b / 3));
+      const oil = Math.max(2, Math.floor(b / 3));
+      const gold = Math.max(1, Math.floor(b / 5));
+      return `+$${money}, +${steel} Aço, +${oil} Petróleo, +${gold} Ouro`;
+    }
+    if (docId === "blitzkrieg") {
+      return `+${Math.max(2, Math.floor(b / 2))} Blindados`;
+    }
+    if (docId === "naval_supremacy" || docId === "fleet_in_being") {
+      const pair = Math.max(1, Math.floor(b / 4));
+      return `+${pair} Aeronave(s) & +${pair} Marinha(s)`;
+    }
+    if (docId === "extermination") {
+      const inf = Math.max(2, Math.floor(b / 3));
+      const heavy = b >= 10 ? 2 : 1;
+      return `+${inf} Inf, +${heavy} Blindado(s), +${heavy} Art, +1 Caça, +1 Frota`;
+    }
+    if (docId === "guerrilla" || docId === "guerrilla_warfare") {
+      const inf = Math.max(2, Math.floor(b / 2));
+      const navy = b >= 10 ? 2 : 1;
+      return `+${inf} Infantarias & +${navy} Marinha(s)`;
+    }
+    return `+${b} ${t("divisions", { count: b })}`;
+  });
 
   let myHasMarket = $derived(
     Boolean(game && myPlayerId && playerHasMarket(game, myPlayerId)),
@@ -369,28 +368,22 @@
     }
   }
 
+  function getBuyQuote(resource: ResourceType, qty: number) {
+    if (!game?.marketPrices) return null;
+    return previewMarketTrade(game.marketPrices, resource, "buy", qty);
+  }
+
+  function getSellQuote(resource: ResourceType, qty: number) {
+    if (!game?.marketPrices) return null;
+    return previewMarketTrade(game.marketPrices, resource, "sell", qty);
+  }
+
   function getEstBuyCost(resource: ResourceType, qty: number): number {
-    if (!game?.marketPrices) return 0;
-    const cfg = DEFAULT_MARKET_CONFIG[resource];
-    let cost = 0;
-    let p = game.marketPrices[resource].buyPrice;
-    for (let i = 0; i < qty; i++) {
-      cost += p;
-      p = Math.min(cfg.maxBuy, p + cfg.step);
-    }
-    return cost;
+    return getBuyQuote(resource, qty)?.totalMoney ?? 0;
   }
 
   function getEstSellRevenue(resource: ResourceType, qty: number): number {
-    if (!game?.marketPrices) return 0;
-    const cfg = DEFAULT_MARKET_CONFIG[resource];
-    let rev = 0;
-    let p = game.marketPrices[resource].sellPrice;
-    for (let i = 0; i < qty; i++) {
-      rev += p;
-      p = Math.max(cfg.minSell, p - cfg.step);
-    }
-    return rev;
+    return getSellQuote(resource, qty)?.totalMoney ?? 0;
   }
 
   function handleMarketTrade(
@@ -491,6 +484,13 @@
     });
   }
 
+  function handleLeaveCoalition(coalitionId: string) {
+    sendAction({
+      type: "leave_coalition",
+      coalitionId,
+    });
+  }
+
   function handleSendAllianceAid(
     targetPlayerId: string,
     payload: { money?: number; steel?: number; oil?: number; gold?: number },
@@ -502,16 +502,61 @@
     });
   }
 
+  let aidMoney = $state(0);
+  let aidSteel = $state(0);
+  let aidOil = $state(0);
+  let aidGold = $state(0);
+  let coalitionAirQty = $state(1);
+  let coalitionAirFromId = $state("");
+  let coalitionAirToId = $state("");
+
+  let myAircraftTerritories = $derived.by(() => {
+    if (!game || !myPlayerId) return [];
+    return Object.values(game.territories).filter(
+      (t) =>
+        t.ownerId === myPlayerId &&
+        getTerritoryUnits(t).aircraft > 0 &&
+        t.armies > 1,
+    );
+  });
+
+  function getCoalitionDestTerritories(targetId: string) {
+    if (!game) return [];
+    const owned = Object.values(game.territories).filter((t) => t.ownerId === targetId);
+    const airfields = owned.filter((t) => hasTerritoryBuilding(t, "airfield"));
+    return airfields.length > 0 ? airfields : owned;
+  }
+
+  function handleSendMarketAid(targetPlayerId: string) {
+    if (aidMoney + aidSteel + aidOil + aidGold <= 0) return;
+    handleSendAllianceAid(targetPlayerId, {
+      money: aidMoney,
+      steel: aidSteel,
+      oil: aidOil,
+      gold: aidGold,
+    });
+    aidMoney = 0;
+    aidSteel = 0;
+    aidOil = 0;
+    aidGold = 0;
+  }
+
   function handleSendCoalitionAircraft(targetPlayerId: string) {
-    if (!selectedAircraftOrigin || !selectedAircraftDest) return;
-    const qty = Math.max(1, Math.min(maxTransferableAircraft, aircraftTransferQty));
+    const fromId = coalitionAirFromId || myAircraftTerritoryId;
+    if (!fromId) return;
+    const destList = getCoalitionDestTerritories(targetPlayerId);
+    const toId =
+      coalitionAirToId && destList.some((t) => t.id === coalitionAirToId)
+        ? coalitionAirToId
+        : destList[0]?.id;
     sendAction({
       type: "send_coalition_aircraft",
       targetPlayerId,
-      fromTerritoryId: selectedAircraftOrigin.id,
-      toTerritoryId: selectedAircraftDest.id,
-      quantity: qty,
+      fromTerritoryId: fromId,
+      toTerritoryId: toId,
+      quantity: Math.max(1, coalitionAirQty),
     });
+    coalitionAirQty = 1;
   }
 </script>
 
@@ -844,6 +889,21 @@
                 <div class="coalition-joined-badge">
                   <Icon name="check" size={12} /> Você é membro ativo desta coalizão
                 </div>
+                <button
+                  type="button"
+                  class="btn-treaty-break"
+                  onclick={() => handleLeaveCoalition(activeCoalitionAgainstTarget.id)}
+                  title={activeDiplomacyTarget.eliminated
+                    ? "Sair da coalizão (sem penalidade pois o alvo já foi eliminado)"
+                    : "Abandonar a coalizão antes da eliminação do alvo (+30% Infâmia)"}
+                >
+                  <Icon name="close" size={13} />
+                  <span>
+                    {activeDiplomacyTarget.eliminated
+                      ? "Sair da Coalizão (Alvo Eliminado)"
+                      : "Sair da Coalizão (+30% Infâmia)"}
+                  </span>
+                </button>
               {/if}
             </div>
           {:else if (activeDiplomacyTarget.infamy ?? 0) >= 50}
@@ -875,38 +935,20 @@
             {@const lendLeaseBlockedByExtermination =
               myPlayerState?.doctrineId === "extermination" ||
               activeDiplomacyTarget.doctrineId === "extermination"}
-            {@const moneyAmt = lendLeaseAmountScale === 3 ? 10 : 3}
-            {@const matAmt = lendLeaseAmountScale}
+            {@const canSendAid = aidMoney + aidSteel + aidOil + aidGold > 0 && !lendLeaseBlockedByExtermination}
+            {@const destOptions = getCoalitionDestTerritories(activeDiplomacyTarget.id)}
+            {@const activeFromTerr = myAircraftTerritories.find((t) => t.id === (coalitionAirFromId || myAircraftTerritoryId)) ?? myAircraftTerritories[0]}
+            {@const maxAirTransfer = activeFromTerr ? Math.min(getTerritoryUnits(activeFromTerr).aircraft, Math.max(0, activeFromTerr.armies - 1)) : 0}
             <div class="dossier-section lend-lease-section">
               <div class="dossier-section-title lend-lease-header-row">
                 <span class="lend-lease-title-left">
                   <Icon name={inSameCoalitionWithTarget ? "swords" : "handshake"} size={12} />
                   <span>
                     {inSameCoalitionWithTarget
-                      ? "Logística de Coalizão (Lend-Lease & Aeronaves)"
-                      : "Ajuda Militar de Aliança (Lend-Lease)"}
+                      ? "Mercado de Coalizão (Lend-Lease & Aeronaves)"
+                      : "Mercado de Aliança (Lend-Lease)"}
                   </span>
                 </span>
-                {#if !lendLeaseBlockedByExtermination}
-                  <div class="lend-lease-scale-pills">
-                    <button
-                      type="button"
-                      class="scale-pill"
-                      class:active={lendLeaseAmountScale === 1}
-                      onclick={() => (lendLeaseAmountScale = 1)}
-                    >
-                      1x
-                    </button>
-                    <button
-                      type="button"
-                      class="scale-pill"
-                      class:active={lendLeaseAmountScale === 3}
-                      onclick={() => (lendLeaseAmountScale = 3)}
-                    >
-                      3x
-                    </button>
-                  </div>
-                {/if}
               </div>
 
               {#if lendLeaseBlockedByExtermination}
@@ -919,121 +961,99 @@
                   </span>
                 </div>
               {:else}
-                <div class="lend-lease-grid">
-                  <button
-                    type="button"
-                    class="btn-lend-lease"
-                    disabled={myRes.money < moneyAmt}
-                    onclick={() => handleSendAllianceAid(activeDiplomacyTarget.id, { money: moneyAmt })}
-                    title={`Enviar $${moneyAmt} do Tesouro Nacional para este aliado`}
-                  >
-                    <Icon name="coins" size={12} />
-                    <span>+${moneyAmt}</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="btn-lend-lease"
-                    disabled={myRes.steel < matAmt}
-                    onclick={() => handleSendAllianceAid(activeDiplomacyTarget.id, { steel: matAmt })}
-                    title={`Enviar ${matAmt} Aço para este aliado`}
-                  >
-                    <Icon name="steel" size={12} />
-                    <span>+{matAmt} Aço</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="btn-lend-lease"
-                    disabled={myRes.oil < matAmt}
-                    onclick={() => handleSendAllianceAid(activeDiplomacyTarget.id, { oil: matAmt })}
-                    title={`Enviar ${matAmt} Petróleo para este aliado`}
-                  >
-                    <Icon name="oil" size={12} />
-                    <span>+{matAmt} Petróleo</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="btn-lend-lease"
-                    disabled={myRes.gold < matAmt}
-                    onclick={() => handleSendAllianceAid(activeDiplomacyTarget.id, { gold: matAmt })}
-                    title={`Enviar ${matAmt} Ouro para este aliado`}
-                  >
-                    <Icon name="gold" size={12} />
-                    <span>+{matAmt} Ouro</span>
-                  </button>
+              <div class="market-aid-rows">
+                <div class="market-aid-row">
+                  <span>Dinheiro (${myRes.money})</span>
+                  <div class="aid-stepper">
+                    <button type="button" onclick={() => (aidMoney = Math.max(0, aidMoney - 5))}>-5</button>
+                    <button type="button" onclick={() => (aidMoney = Math.max(0, aidMoney - 1))}>-</button>
+                    <strong>${aidMoney}</strong>
+                    <button type="button" onclick={() => (aidMoney = Math.min(myRes.money, aidMoney + 1))}>+</button>
+                    <button type="button" onclick={() => (aidMoney = Math.min(myRes.money, aidMoney + 5))}>+5</button>
+                  </div>
                 </div>
+                <div class="market-aid-row">
+                  <span>Aço ({myRes.steel})</span>
+                  <div class="aid-stepper">
+                    <button type="button" onclick={() => (aidSteel = Math.max(0, aidSteel - 1))}>-</button>
+                    <strong>{aidSteel}</strong>
+                    <button type="button" onclick={() => (aidSteel = Math.min(myRes.steel, aidSteel + 1))}>+</button>
+                    <button type="button" onclick={() => (aidSteel = myRes.steel)}>Max</button>
+                  </div>
+                </div>
+                <div class="market-aid-row">
+                  <span>Petróleo ({myRes.oil})</span>
+                  <div class="aid-stepper">
+                    <button type="button" onclick={() => (aidOil = Math.max(0, aidOil - 1))}>-</button>
+                    <strong>{aidOil}</strong>
+                    <button type="button" onclick={() => (aidOil = Math.min(myRes.oil, aidOil + 1))}>+</button>
+                    <button type="button" onclick={() => (aidOil = myRes.oil)}>Max</button>
+                  </div>
+                </div>
+                <div class="market-aid-row">
+                  <span>Ouro ({myRes.gold})</span>
+                  <div class="aid-stepper">
+                    <button type="button" onclick={() => (aidGold = Math.max(0, aidGold - 1))}>-</button>
+                    <strong>{aidGold}</strong>
+                    <button type="button" onclick={() => (aidGold = Math.min(myRes.gold, aidGold + 1))}>+</button>
+                    <button type="button" onclick={() => (aidGold = myRes.gold)}>Max</button>
+                  </div>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                class="btn-coalition-aircraft"
+                disabled={!canSendAid}
+                onclick={() => handleSendMarketAid(activeDiplomacyTarget.id)}
+              >
+                <Icon name="coins" size={13} />
+                <span>Enviar Remessa Lend-Lease</span>
+              </button>
+
               {/if}
 
               {#if inSameCoalitionWithTarget}
-                <div class="coalition-aircraft-panel">
-                  <div class="coalition-aircraft-row">
-                    <label class="aircraft-select-group">
-                      <span>Base de Origem</span>
-                      <select
-                        bind:value={aircraftOriginId}
-                        disabled={myAircraftTerritories.length === 0}
-                      >
-                        {#if myAircraftTerritories.length === 0}
-                          <option value="">Sem esquadrilhas elegíveis</option>
-                        {:else}
-                          {#each myAircraftTerritories as orig (orig.id)}
-                            {@const avail = Math.min(orig.units?.aircraft ?? 0, orig.armies - 1)}
-                            <option value={orig.id}>
-                              {getTerritoryName(orig.id)} ({avail} disp.{hasTerritoryBuilding(orig, "airfield") ? " • Aeródromo" : ""})
-                            </option>
-                          {/each}
-                        {/if}
+                <div class="coalition-air-panel">
+                  <div class="coalition-air-row">
+                    <label>
+                      <span>Origem:</span>
+                      <select bind:value={coalitionAirFromId} disabled={myAircraftTerritories.length === 0}>
+                        {#each myAircraftTerritories as src}
+                          <option value={src.id}>
+                            {getTerritoryName(src.id)} ({getTerritoryUnits(src).aircraft} Air)
+                          </option>
+                        {/each}
                       </select>
                     </label>
-
-                    <label class="aircraft-select-group">
-                      <span>Base Aliada de Destino</span>
-                      <select
-                        bind:value={aircraftDestId}
-                        disabled={targetPartnerTerritories.length === 0}
-                      >
-                        {#each targetPartnerTerritories as dest (dest.id)}
-                          <option value={dest.id}>
-                            {getTerritoryName(dest.id)}{activeDiplomacyTarget.capitalTerritoryId === dest.id ? " (Capital)" : hasTerritoryBuilding(dest, "airfield") ? " (Aeródromo)" : ""}
+                    <label>
+                      <span>Destino (Aeródromo):</span>
+                      <select bind:value={coalitionAirToId} disabled={destOptions.length === 0}>
+                        {#each destOptions as dst}
+                          <option value={dst.id}>
+                            {getTerritoryName(dst.id)}{hasTerritoryBuilding(dst, "airfield") ? " [Aeródromo]" : ""}
                           </option>
                         {/each}
                       </select>
                     </label>
                   </div>
-
-                  <div class="coalition-aircraft-actions">
-                    <div class="aircraft-qty-stepper">
-                      <button
-                        type="button"
-                        disabled={!selectedAircraftOrigin || aircraftTransferQty <= 1}
-                        onclick={() => (aircraftTransferQty = Math.max(1, aircraftTransferQty - 1))}
-                        aria-label="Reduzir aeronaves"
-                      >
-                        -
-                      </button>
-                      <span>{aircraftTransferQty}</span>
-                      <button
-                        type="button"
-                        disabled={!selectedAircraftOrigin || aircraftTransferQty >= maxTransferableAircraft}
-                        onclick={() =>
-                          (aircraftTransferQty = Math.min(maxTransferableAircraft, aircraftTransferQty + 1))}
-                        aria-label="Aumentar aeronaves"
-                      >
-                        +
-                      </button>
+                  <div class="market-aid-row">
+                    <span>Esquadrilha ({maxAirTransfer} disp.)</span>
+                    <div class="aid-stepper">
+                      <button type="button" onclick={() => (coalitionAirQty = Math.max(1, coalitionAirQty - 1))}>-</button>
+                      <strong>{Math.min(Math.max(1, coalitionAirQty), Math.max(1, maxAirTransfer))}</strong>
+                      <button type="button" onclick={() => (coalitionAirQty = Math.min(Math.max(1, maxAirTransfer), coalitionAirQty + 1))}>+</button>
                     </div>
-                    <button
-                      type="button"
-                      class="btn-coalition-aircraft"
-                      disabled={!selectedAircraftOrigin || !selectedAircraftDest}
-                      onclick={() => handleSendCoalitionAircraft(activeDiplomacyTarget.id)}
-                      title={selectedAircraftOrigin && selectedAircraftDest
-                        ? `Transferir ${aircraftTransferQty} aeronave(s) de ${getTerritoryName(selectedAircraftOrigin.id)} para ${getTerritoryName(selectedAircraftDest.id)}`
-                        : "Você precisa ter ao menos 1 Aeronave em um território com mais de 1 divisão para transferir"}
-                    >
-                      <Icon name="aircraft" size={13} />
-                      <span>Transferir +{aircraftTransferQty} Aeronave{aircraftTransferQty > 1 ? "s" : ""}</span>
-                    </button>
                   </div>
+                  <button
+                    type="button"
+                    class="btn-coalition-aircraft"
+                    disabled={maxAirTransfer < 1 || destOptions.length === 0}
+                    onclick={() => handleSendCoalitionAircraft(activeDiplomacyTarget.id)}
+                  >
+                    <Icon name="aircraft" size={13} />
+                    <span>Transferir Esquadrilha de Coalizão</span>
+                  </button>
                 </div>
               {/if}
             </div>
@@ -1336,6 +1356,7 @@
         </div>
         <div
           class="tc-timer"
+          class:timer-paused={pauseState?.paused}
           class:timer-warning={remainingSeconds <= 20 && remainingSeconds > 10}
           class:timer-danger={remainingSeconds <= 20 && remainingSeconds > 10}
           class:timer-critical={remainingSeconds <= 10}
@@ -1345,9 +1366,63 @@
           aria-label={`Tempo restante de turno: ${remainingSeconds} segundos`}
         >
           <Icon name="clock" size={14} />
-          <span>{remainingSeconds}s</span>
+          <span>{pauseState?.paused ? "PAUSADO" : `${remainingSeconds}s`}</span>
         </div>
+        {#if amIHost && onTogglePause && !game.winnerId}
+          <button
+            type="button"
+            class="tc-pause-btn"
+            class:paused={pauseState?.paused}
+            onclick={onTogglePause}
+            title={pauseState?.paused ? "Retomar partida" : "Pausar cronômetro da partida"}
+          >
+            {pauseState?.paused ? "Retomar" : "Pausar"}
+          </button>
+        {/if}
       </div>
+    {/if}
+
+    {#if pauseState?.paused}
+      <div class="pause-status-banner" role="status">
+        <strong>
+          {pauseState.reason === "disconnect"
+            ? `AUTO-PAUSE DE RECONEXÃO (${pauseState.pausedPlayerName ?? "Comandante"})`
+            : `PAUSA TÁTICA (${pauseState.pausedPlayerName ?? "Anfitrião"})`}
+        </strong>
+        {#if pauseCountdownSec > 0}
+          <span class="pause-countdown">{pauseCountdownSec}s</span>
+        {/if}
+      </div>
+    {/if}
+
+    {#if hasActiveNavalBlockade}
+      <div
+        class="naval-blockade-pill"
+        title="Pelo menos uma rota marítima do seu império está bloqueada por frota inimiga"
+      >
+        <Icon name="navy" size={12} />
+        <span>BLOQUEIO NAVAL</span>
+      </div>
+    {/if}
+
+    {#if partisanStatus?.isPartisan && !isClassicMode}
+      <button
+        type="button"
+        class="partisan-status-pill"
+        class:urgent={partisanStatus.isDueNow}
+        onclick={() => {
+          const targetId = partisanStatus?.eligibleTerritoryIds[0] ?? myPlayerState?.capitalTerritoryId;
+          if (targetId) onFocusTerritory?.(targetId);
+        }}
+        title="Clique para centralizar em um território elegível para a Base Nômade Partisan"
+      >
+        <Icon name="capital" size={12} />
+        {#if partisanStatus.isDueNow}
+          <span>BASE PARTISAN: RELOCAÇÃO OBRIGATÓRIA NESTE TURNO (CLIQUE)</span>
+        {:else}
+          <span>Base Nômade Partisan: {partisanStatus.roundsRemaining} turno(s) restante(s)</span>
+        {/if}
+      </button>
     {/if}
 
     <TacticalAlerts
@@ -1477,17 +1552,19 @@
           {/if}
         </button>
 
-        <button
-          class="hud-btn hq-deck-btn"
-          data-testid="btn-open-market"
-          class:highlight={Boolean(myHasMarket)}
-          class:active={activeRightDrawer === "market"}
-          onclick={() => toggleRightDrawer("market")}
-          title={t("market_btn_open")}
-        >
-          <span class="hq-btn-icon"><Icon name="market" size={14} /></span>
-          <span class="hq-btn-label">{t("market_btn_open")}</span>
-        </button>
+        {#if !isClassicMode}
+          <button
+            class="hud-btn hq-deck-btn"
+            data-testid="btn-open-market"
+            class:highlight={Boolean(myHasMarket)}
+            class:active={activeRightDrawer === "market"}
+            onclick={() => toggleRightDrawer("market")}
+            title={t("market_btn_open")}
+          >
+            <span class="hq-btn-icon"><Icon name="market" size={14} /></span>
+            <span class="hq-btn-label">{t("market_btn_open")}</span>
+          </button>
+        {/if}
       </div>
 
       <div class="hq-secondary-row">
@@ -1525,7 +1602,7 @@
       </div>
     </div>
 
-    {#if myPlayerState}
+    {#if myPlayerState && !isClassicMode}
       {@const res = myPlayerState.resources ?? {
         money: 0,
         steel: 0,
@@ -2171,7 +2248,7 @@
               count: (game.tradeCount ?? 0) + 1,
             })}</span
           >
-          <strong>+{t("divisions", { count: nextTradeBonus })}</strong>
+          <strong>{nextTradeSummary}</strong>
         </div>
 
         <div class="cards-grid">
@@ -2207,11 +2284,12 @@
               sendAction({ type: "trade_cards", cardIds: validTradeTriplet })}
           >
             <Icon name="shield" size={15} />
-            {t("cards_exchange_btn", { armies: nextTradeBonus })}
+            Trocar Cartas ({nextTradeSummary})
           </button>
         {/if}
 
-        {#if isMyTurn && game.phase === "deploy" && myPlayerState.cards.length < 5}
+        {#if !isClassicMode && isMyTurn && game.phase === "deploy" && myPlayerState.cards.length < 5}
+          {@const goldCardCost = game.rulesConfig?.supplyCardGoldCost ?? 4}
           {@const res = myPlayerState.resources ?? {
             money: 0,
             steel: 0,
@@ -2219,11 +2297,11 @@
             gold: 0,
           }}
           {@const canBuyWithGold =
-            !myPlayerState.boughtCardWithGoldThisTurn && res.gold >= 4}
+            !myPlayerState.boughtCardWithGoldThisTurn && res.gold >= goldCardCost}
           <div class="gold-card-purchase-box">
             <div class="gold-card-purchase-head">
               <Icon name="gold" size={13} />
-              <span>{t("cards_buy_gold_title")}</span>
+              <span>{t("cards_buy_gold_title")} ({goldCardCost} Ouro)</span>
             </div>
             <p class="gold-card-purchase-sub">{t("cards_buy_gold_sub")}</p>
             {#if myPlayerState.boughtCardWithGoldThisTurn}
@@ -2315,8 +2393,10 @@
           <div class="market-commodities-grid">
             {#each ["steel", "oil", "gold"] as const as res}
               {@const stock = myPlayerState.resources[res] ?? 0}
-              {@const buyCost = getEstBuyCost(res, marketBatchQty)}
-              {@const sellRev = getEstSellRevenue(res, marketBatchQty)}
+              {@const buyQuote = getBuyQuote(res, marketBatchQty)}
+              {@const sellQuote = getSellQuote(res, marketBatchQty)}
+              {@const buyCost = buyQuote?.totalMoney ?? 0}
+              {@const sellRev = sellQuote?.totalMoney ?? 0}
               {@const currentPrice = game.marketPrices[res]}
               {@const lacksFunds = treasuryMoney < buyCost}
               {@const lacksStock = stock < marketBatchQty}
@@ -2376,6 +2456,11 @@
                     {marketBatchQty}x (+${sellRev})
                   </button>
                 </div>
+                {#if marketBatchQty > 1 && buyQuote && sellQuote}
+                  <div class="market-quote-preview">
+                    <span>Após {marketBatchQty}x: Compra ${buyQuote.nextBuyPrice} • Venda ${sellQuote.nextSellPrice}</span>
+                  </div>
+                {/if}
               </div>
             {/each}
           </div>
@@ -5720,5 +5805,153 @@
     .tc-directive {
       font-size: 0.66rem;
     }
+  }
+
+  .tc-pause-btn {
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 0.65rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    border: 1px solid rgba(250, 204, 21, 0.45);
+    background: rgba(15, 23, 42, 0.9);
+    color: #fde047;
+    cursor: pointer;
+  }
+  .tc-pause-btn.paused {
+    border-color: #10b981;
+    color: #6ee7b7;
+  }
+  .tc-timer.timer-paused {
+    border-color: #eab308 !important;
+    color: #fef08a !important;
+    animation: none !important;
+  }
+  .pause-status-banner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 5px;
+    padding: 4px 10px;
+    border-radius: 5px;
+    background: rgba(234, 179, 8, 0.16);
+    border: 1px solid rgba(234, 179, 8, 0.55);
+    color: #fef08a;
+    font-size: 0.68rem;
+  }
+  .pause-countdown {
+    font-family: var(--font-mono);
+    font-weight: 800;
+    color: #ffffff;
+  }
+  .partisan-status-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    margin-top: 5px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    background: rgba(15, 23, 42, 0.85);
+    color: #cbd5e1;
+    font-size: 0.64rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .partisan-status-pill.urgent {
+    border-color: #f59e0b;
+    background: rgba(245, 158, 11, 0.2);
+    color: #fef08a;
+    animation: partisan-pill-glow 1.3s ease-in-out infinite alternate;
+  }
+  @keyframes partisan-pill-glow {
+    from { box-shadow: 0 0 4px rgba(245, 158, 11, 0.35); }
+    to { box-shadow: 0 0 12px rgba(245, 158, 11, 0.8); }
+  }
+  .market-quote-preview {
+    margin-top: 4px;
+    font-size: 0.63rem;
+    color: #94a3b8;
+    text-align: center;
+  }
+  .market-aid-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 6px 0 8px;
+  }
+  .market-aid-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 0.72rem;
+    color: #e2e8f0;
+  }
+  .aid-stepper {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .aid-stepper button {
+    padding: 2px 6px;
+    border-radius: 4px;
+    border: 1px solid rgba(148, 163, 184, 0.3);
+    background: rgba(15, 23, 42, 0.85);
+    color: #f8fafc;
+    font-size: 0.68rem;
+    cursor: pointer;
+  }
+  .aid-stepper button:hover {
+    border-color: #eab308;
+  }
+  .aid-stepper strong {
+    min-width: 26px;
+    text-align: center;
+    color: #facc15;
+    font-family: "JetBrains Mono", monospace;
+  }
+  .coalition-air-panel {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(148, 163, 184, 0.2);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .coalition-air-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  .coalition-air-row label {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 0.66rem;
+    color: #94a3b8;
+  }
+  .coalition-air-row select {
+    background: rgba(15, 23, 42, 0.9);
+    border: 1px solid rgba(148, 163, 184, 0.3);
+    color: #f8fafc;
+    border-radius: 4px;
+    padding: 3px 5px;
+    font-size: 0.68rem;
+  }
+  .naval-blockade-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid #ef4444;
+    background: rgba(127, 29, 29, 0.65);
+    color: #fecaca;
+    font-size: 0.68rem;
+    font-weight: 700;
   }
 </style>

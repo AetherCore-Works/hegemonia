@@ -31,6 +31,11 @@
     onPreviewObjective?.(null);
   });
 
+  function selectCard(obj: ObjectiveCard) {
+    chosenId = obj.id;
+    onPreviewObjective?.(obj);
+  }
+
   function hasDoctrineAffinity(obj: ObjectiveCard, docId?: DoctrineId | null): boolean {
     if (!docId) return false;
     if (docId === "extermination") return obj.rule.type === "eliminate_players";
@@ -40,6 +45,7 @@
 
   function confirmSelection() {
     if (selectedObjectiveId) {
+      onPreviewObjective?.(null);
       onSelect(selectedObjectiveId);
     }
   }
@@ -117,7 +123,7 @@
             class="objective-card-option"
             class:selected={isSelected}
             class:affinity-card={isAffinity}
-            onclick={() => (chosenId = obj.id)}
+            onclick={() => selectCard(obj)}
             onmouseenter={() => (hoveredId = obj.id)}
             onmouseleave={() => {
               if (hoveredId === obj.id) hoveredId = null;

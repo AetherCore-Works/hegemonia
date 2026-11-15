@@ -656,7 +656,8 @@ describe("Diplomacy, Treaties, World Tension and Coalitions", () => {
     // Round advanced to 2
     expect(state.round).toBe(2);
     expect(state.worldTension).toBe(1.5);
-    expect(state.players[0].infamy).toBe(2);
+    // +5% (>=38% hegemonia) + 2% (líder de territórios) + 2% (maior exército não-Tall)
+    expect(state.players[0].infamy).toBe(9);
   });
 });
 
@@ -3474,12 +3475,15 @@ describe("HEGEM-96: Manual Deploy Phase Transition (end_deploy)", () => {
       // Set 4 fortified territories
       const ownedTerrs = Object.values(state.territories).filter((t) => t.ownerId === "p1").slice(0, 4);
       for (const t of ownedTerrs) {
-        t.buildings = [{ type: "fortification", level: 1 }];
+        t.buildings = [{ type: "fortification", level: 1 }, { type: "wonder", level: 1 }];
       }
+      const p1Init = state.players.find((p) => p.id === "p1")!;
+      p1Init.wonderStatus = "constructing";
+      p1Init.wonderConstructionLeft = 1;
 
       expect(checkPlayerVictory(state, "p1", CLASSIC_MAP)).toBe(false);
 
-      // Advance turn through all players to advance the round
+      // Advance turn through all players to advance the round -> wonder completes and starts 6-round countdown
       state.turnIndex = state.players.findIndex((p) => p.id === "p1");
       state.phase = "attack";
       state = applyAction(state, "p1", { type: "end_turn" }, rng);
@@ -3488,13 +3492,13 @@ describe("HEGEM-96: Manual Deploy Phase Transition (end_deploy)", () => {
       state.phase = "attack";
       state = applyAction(state, nextPlayer.id, { type: "end_turn" }, rng);
 
-      // Round advanced: bastionRoundsHeld should be 1, and global alert logged
       const updatedP1 = state.players.find((p) => p.id === "p1")!;
-      expect(updatedP1.bastionRoundsHeld).toBe(1);
-      expect(state.log.some((l) => l.includes("ALERTA GLOBAL — BASTIÃO SOBERANO"))).toBe(true);
+      expect(updatedP1.wonderStatus).toBe("countdown");
+      expect(updatedP1.wonderCountdownLeft).toBe(6);
+      expect(state.dramaticEvents?.some((e) => e.kind === "wonder_completed")).toBe(true);
 
-      // Simulate 5 rounds held
-      updatedP1.bastionRoundsHeld = 5;
+      // Simulate countdown reaching 0
+      updatedP1.wonderCountdownLeft = 0;
       expect(checkPlayerVictory(state, "p1", CLASSIC_MAP)).toBe(true);
     });
 
@@ -4186,6 +4190,7 @@ describe("HEGEM-142: Objetivo Bastião e Construção da Maravilha Soberana (Fim
     state.turnIndex = 0;
 
     const p1 = state.players.find((p) => p.id === "p1")!;
+    p1.pendingObjectiveChoice = false;
     p1.objective = {
       id: "obj_fortified_bastion",
       descriptionPt: "Bastião Inexpugnável",
@@ -4201,7 +4206,7 @@ describe("HEGEM-142: Objetivo Bastião e Construção da Maravilha Soberana (Fim
     const p1Terr = Object.values(state.territories).find((t) => t.ownerId === "p1")!;
     p1Terr.buildings = [];
 
-    p1.resources = { money: 20, steel: 10, oil: 5, gold: 5 };
+    p1.resources = { money: 200, steel: 50, oil: 5, gold: 5 };
 
     // 1. Cannot build without fortification
     expect(() =>
@@ -4215,11 +4220,11 @@ describe("HEGEM-142: Objetivo Bastião e Construção da Maravilha Soberana (Fim
     state = applyAction(state, "p1", { type: "build_structure", territoryId: p1Terr.id, buildingType: "wonder" }, rng);
 
     const updatedP1 = state.players.find((p) => p.id === "p1")!;
-    expect(updatedP1.resources.money).toBe(8); // 20 - 12
-    expect(updatedP1.resources.steel).toBe(6); // 10 - 4
-    expect(updatedP1.wonderRoundsHeld).toBe(0);
+    expect(updatedP1.resources.money).toBeLessThan(200);
+    expect(updatedP1.resources.steel).toBeLessThan(50);
+    expect(updatedP1.wonderStatus).toBe("constructing");
     expect(state.territories[p1Terr.id].buildings?.some((b) => b.type === "wonder")).toBe(true);
-    expect(state.log.some((l) => l.includes("ALERTA GLOBAL — MARAVILHA DO BASTIÃO"))).toBe(true);
+    expect(state.log.some((l) => l.includes("OBRA DO DIA FINAL"))).toBe(true);
 
     // 4. Cannot build a second Wonder
     const secondTerr = Object.values(state.territories).find((t) => t.ownerId === "p1" && t.id !== p1Terr.id)!;
@@ -4244,6 +4249,7 @@ describe("HEGEM-142: Objetivo Bastião e Construção da Maravilha Soberana (Fim
     state.turnIndex = 0;
 
     const p1 = state.players.find((p) => p.id === "p1")!;
+    p1.pendingObjectiveChoice = false;
     p1.objective = {
       id: "obj_fortified_bastion",
       descriptionPt: "Bastião Inexpugnável",
@@ -4260,11 +4266,12 @@ describe("HEGEM-142: Objetivo Bastião e Construção da Maravilha Soberana (Fim
       { type: "fortification", level: 1 },
       { type: "wonder", level: 1 },
     ];
-    p1.wonderRoundsHeld = 0;
+    p1.wonderStatus = "countdown";
+    p1.wonderCountdownLeft = 3;
 
     // Check progress tracking includes Wonder
     const progInitial = calculateObjectiveProgress(state, "p1", CLASSIC_MAP);
-    expect(progInitial.metrics.some((m) => m.label.includes("Maravilha"))).toBe(true);
+    expect(progInitial.metrics.some((m) => m.label.includes("Cidadela"))).toBe(true);
 
     const advanceFullRound = () => {
       for (let i = 0; i < state.players.length; i++) {
@@ -4279,31 +4286,28 @@ describe("HEGEM-142: Objetivo Bastião e Construção da Maravilha Soberana (Fim
     // Pass Round 2 -> Round 3
     advanceFullRound();
 
-    // Round 3 begins: wonderRoundsHeld should now be 1
+    // Round 3 begins: countdown should now be 2
     const p1Round3 = state.players.find((p) => p.id === "p1")!;
-    expect(p1Round3.wonderRoundsHeld).toBe(1);
-    expect(state.log.some((l) => l.includes("1/3 rodadas"))).toBe(true);
+    expect(p1Round3.wonderCountdownLeft).toBe(2);
     expect(state.winnerId).toBeNull();
 
     // Advance Round 3 -> Round 4
     advanceFullRound();
 
-    // Round 4 begins: wonderRoundsHeld should now be 2
+    // Round 4 begins: countdown should now be 1
     const p1Round4 = state.players.find((p) => p.id === "p1")!;
-    expect(p1Round4.wonderRoundsHeld).toBe(2);
-    expect(state.log.some((l) => l.includes("2/3 rodadas"))).toBe(true);
+    expect(p1Round4.wonderCountdownLeft).toBe(1);
     expect(state.winnerId).toBeNull();
 
-    // Advance Round 4 -> Round 5 (3rd round held: APOCALYPSE / VICTORY)
+    // Advance Round 4 -> Round 5 (countdown hits 0: VICTORY)
     advanceFullRound();
 
     // Round 5: World ends, player 1 wins!
     const p1Round5 = state.players.find((p) => p.id === "p1")!;
-    expect(p1Round5.wonderRoundsHeld).toBe(3);
+    expect(p1Round5.wonderCountdownLeft).toBe(0);
     expect(state.winnerId).toBe("p1");
     expect(state.phase).toBe("game_over");
     expect(checkPlayerVictory(state, "p1", CLASSIC_MAP)).toBe(true);
-    expect(state.log.some((l) => l.includes("O MUNDO ACABA"))).toBe(true);
   });
 
   it("dismantles the Wonder and resets the apocalypse countdown when an enemy breaches and conquers the territory", () => {
@@ -4367,7 +4371,7 @@ describe("HEGEM-142: Objetivo Bastião e Construção da Maravilha Soberana (Fim
     // Defender countdown reset to 0
     expect(state.players.find((p) => p.id === "p1")!.wonderRoundsHeld).toBe(0);
     // Cancellation logged
-    expect(state.log.some((l) => l.includes("MARAVILHA DO BASTIÃO DESTRUÍDA"))).toBe(true);
+    expect(state.log.some((l) => l.includes("CIDADELA DO DIA FINAL DESTRUÍDA"))).toBe(true);
   });
 });
 

@@ -8,6 +8,7 @@
     getTerritoryUnits,
     getTerritoryBuildingLevel,
     getTerritoryMaxBuildingSlots,
+    getWonderCost,
     hasTerritoryBuilding,
   } from "@hegemonia/engine";
   import type {
@@ -371,7 +372,15 @@
             </div>
           </section>
 
-          <!-- 5. TERRITORIAL INFRASTRUCTURE & MILITARY ENGINEERING (HEGEM-32 & HEGEM-107) -->
+          <!-- 5. TERRITORIAL INFRASTRUCTURE & MILITARY ENGINEERING (Hidden in Classic Mode) -->
+          {#if game.rulesConfig?.classicMode}
+            <section class="recon-section">
+              <div class="classic-recon-banner">
+                <strong>Modo Clássico (War/Risk Puro)</strong>
+                <small>Construções, recursos e unidades especiais estão desativados nesta partida.</small>
+              </div>
+            </section>
+          {:else}
           <section class="recon-section">
             <div class="section-header-bar recon-infra-header">
               <span class="infra-title">
@@ -613,6 +622,34 @@
                       </strong>
                       <strong class="cost-tag steel" class:missing={myRes.steel < 1}>
                         <Icon name="steel" size={11} /> 1
+                      </strong>
+                    </div>
+                  </button>
+                {/if}
+
+                <!-- Doomsday Citadel (Wonder) — HEGEM-168 -->
+                {#if game && myPlayerState && (myPlayerState.objective?.rule.type === "fortified_bastion" || myPlayerState.doctrineId === "tall_sovereign" || myPlayerState.doctrineId === "defense_in_depth") && hasTerritoryBuilding(inspectedTerritory.state, "fortification") && !Object.values(game.territories).some((t) => t.ownerId === myPlayerId && hasTerritoryBuilding(t, "wonder"))}
+                  {@const wCost = getWonderCost(game, myPlayerId!)}
+                  <button
+                    type="button"
+                    class="btn-build-option wonder-opt"
+                    disabled={bldgs.length >= maxSlots || myRes.money < wCost.money || myRes.steel < wCost.steel}
+                    onclick={() => handleBuildStructure(inspectedTerritory!.def.id, "wonder")}
+                    title="Constrói a Cidadela do Dia Final (+1 dado de defesa na obra; 6 rodadas após concluída para vitória mundial)"
+                  >
+                    <div class="build-opt-icon wonder">
+                      <Icon name="capital" size={18} />
+                    </div>
+                    <div class="build-opt-copy">
+                      <span class="build-opt-title">Cidadela do Dia Final</span>
+                      <small class="build-opt-sub">Maravilha (+1 Def na obra • Vitória 6t)</small>
+                    </div>
+                    <div class="build-opt-costs">
+                      <strong class="cost-tag money" class:missing={myRes.money < wCost.money}>
+                        <Icon name="coins" size={11} /> ${wCost.money}
+                      </strong>
+                      <strong class="cost-tag steel" class:missing={myRes.steel < wCost.steel}>
+                        <Icon name="steel" size={11} /> {wCost.steel}
                       </strong>
                     </div>
                   </button>
@@ -926,6 +963,7 @@
                 {/each}
               </div>
             </section>
+          {/if}
           {/if}
         </div>
       </div>
@@ -1922,5 +1960,20 @@
     color: #94a3b8;
     font-size: 0.65rem;
     pointer-events: auto;
+  }
+  .classic-recon-banner {
+    padding: 10px 12px;
+    border-radius: 6px;
+    background: rgba(234, 179, 8, 0.08);
+    border: 1px solid rgba(234, 179, 8, 0.32);
+    color: #fde047;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 0.75rem;
+  }
+  .classic-recon-banner small {
+    color: #cbd5e1;
+    font-size: 0.68rem;
   }
 </style>

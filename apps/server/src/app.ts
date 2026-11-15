@@ -57,7 +57,7 @@ function resolveServerCommitHash(): string {
       }
     }
   } catch {}
-  return "dev";
+  return process.env.NODE_ENV === "production" ? "prod" : "dev";
 }
 
 let serverCommitHash = resolveServerCommitHash();
