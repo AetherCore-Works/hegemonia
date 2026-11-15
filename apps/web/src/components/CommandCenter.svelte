@@ -1,16 +1,21 @@
 <script lang="ts">
   import {
+    DEFAULT_CUSTOM_RULES,
     DOCTRINE_LIST,
     DoctrineIdSchema,
+    RULES_PRESETS,
     TACTICAL_SCENARIOS,
     isDoctrineAvailableInLobby,
+    normalizeCustomRules,
     type CompetitionMode,
+    type CustomRulesConfig,
     type DoctrineId,
     type LeaderboardRow,
     type MatchOrigin,
     type MatchmakingStatus,
     type PlayerColor,
     type PublicQueueMode,
+    type RulesPresetId,
     type TacticalScenarioId,
   } from "@hegemonia/shared";
   import { api, navigate } from "../lib/api";
@@ -56,6 +61,8 @@
     competitionMode = "custom",
     matchOrigin = "lobby",
     selectedScenarioId = "standard",
+    customRules = DEFAULT_CUSTOM_RULES,
+    onUpdateCustomRules,
     onQueue,
     onCancelQueue,
     onConnectMatch,
@@ -84,6 +91,8 @@
     competitionMode?: CompetitionMode;
     matchOrigin?: MatchOrigin;
     selectedScenarioId?: TacticalScenarioId;
+    customRules?: CustomRulesConfig;
+    onUpdateCustomRules?: (next: CustomRulesConfig) => void;
     onQueue: (mode: PublicQueueMode) => void;
     onCancelQueue: () => void;
     onConnectMatch: () => void;
@@ -129,6 +138,56 @@
   let selectedDoctrineId = $state<DoctrineId | null>(null);
   let topCommanders = $state<LeaderboardRow[]>([]);
   let copiedCode = $state(false);
+  let speechBubblesByPlayer = $state<Record<string, { id: string; text: string }>>({});
+  const seenBubbleMsgIds = new Set<string>();
+  const QUICK_CHAT_PHRASES = ["Pronto!", "Vamos começar?", "GLHF!", "Modo Clássico?"];
+
+  $effect(() => {
+    const msgs = communications.messages;
+    const now = Date.now();
+    for (const msg of msgs) {
+      if (seenBubbleMsgIds.has(msg.id)) continue;
+      seenBubbleMsgIds.add(msg.id);
+      if (!msg.senderId || msg.kind !== "message") continue;
+      const ageMs = now - Date.parse(msg.createdAt || "");
+      if (Number.isFinite(ageMs) && ageMs > 12_000) continue;
+      const senderId = msg.senderId;
+      speechBubblesByPlayer = {
+        ...speechBubblesByPlayer,
+        [senderId]: { id: msg.id, text: msg.text },
+      };
+      setTimeout(() => {
+        if (speechBubblesByPlayer[senderId]?.id === msg.id) {
+          const next = { ...speechBubblesByPlayer };
+          delete next[senderId];
+          speechBubblesByPlayer = next;
+        }
+      }, 5500);
+    }
+  });
+
+  function applyPreset(presetId: Exclude<RulesPresetId, "custom">) {
+    if (!amIHost || !onUpdateCustomRules) return;
+    const preset = RULES_PRESETS[presetId];
+    if (!preset) return;
+    onUpdateCustomRules(
+      normalizeCustomRules({
+        ...preset.config,
+        preset: presetId,
+      })
+    );
+  }
+
+  function patchCustomRules(patch: Partial<CustomRulesConfig>) {
+    if (!amIHost || !onUpdateCustomRules) return;
+    onUpdateCustomRules(
+      normalizeCustomRules({
+        ...customRules,
+        ...patch,
+        preset: "custom",
+      })
+    );
+  }
 
   $effect(() => {
     api<{ leaderboard: LeaderboardRow[] }>("/api/leaderboard?limit=6")
@@ -443,7 +502,20 @@
           <div class="briefing-main-col">
             <div class="roster-block">
               <div class="section-subhead">
-                <span>{t("lobby_roster_title")}</span>
+                <div class="subhead-title-row">
+                  <span>{t("lobby_roster_title")}</span>
+                  <div class="quick-chat-bar" title="Enviar frase rápida no chat do Lobby">
+                    {#each QUICK_CHAT_PHRASES as phrase}
+                      <button
+                        type="button"
+                        class="quick-chat-pill"
+                        onclick={() => communications.send(phrase)}
+                      >
+                        {phrase}
+                      </button>
+                    {/each}
+                  </div>
+                </div>
                 <small>{t("lobby_roster_sub")}</small>
               </div>
 
@@ -454,11 +526,17 @@
                       ? selectedDoctrineId
                       : (p.doctrineId ?? "blitzkrieg")}
                   {@const rank = getMilitaryRank(p.level ?? 1)}
+                  {@const speechBubble = speechBubblesByPlayer[p.token]}
                   <div
                     class="slot-card occupied"
                     class:is-me={p.token === myPlayerId}
                     style="border-left-color: {p.color === 'black' ? '#cbd5e1' : COLOR_HEX[p.color]};"
                   >
+                    {#if speechBubble}
+                      <div class="slot-speech-bubble" role="status">
+                        <span>{speechBubble.text}</span>
+                      </div>
+                    {/if}
                     <FactionFlag color={p.color} width={30} height={19} />
                     <Avatar
                       name={p.name}
@@ -495,14 +573,16 @@
                     </div>
 
                     <div class="slot-badges">
-                      {#if p.token === myPlayerId}
-                        {#if selectedDoctrineId}
-                          <DoctrineCrest doctrineId={selectedDoctrineId} size={22} />
+                      {#if !customRules.classicMode}
+                        {#if p.token === myPlayerId}
+                          {#if selectedDoctrineId}
+                            <DoctrineCrest doctrineId={selectedDoctrineId} size={22} />
+                          {:else}
+                            <DoctrineCrest variant="blank" size={22} />
+                          {/if}
                         {:else}
-                          <DoctrineCrest variant="blank" size={22} />
+                          <DoctrineCrest variant="confidential" size={22} />
                         {/if}
-                      {:else}
-                        <DoctrineCrest variant="confidential" size={22} />
                       {/if}
                       {#if p.isHost}
                         <span class="role-badge host" title={t("lobby_role_host")}>
@@ -600,9 +680,15 @@
 
             <div class="doctrine-picker-panel">
               <div class="section-subhead">
-                <span>DOUTRINA MILITAR NACIONAL (OBRIGATÓRIA & SECRETA)</span>
+                <span>
+                  {customRules.classicMode
+                    ? "DOUTRINA MILITAR NACIONAL (DESATIVADA NO MODO CLÁSSICO)"
+                    : "DOUTRINA MILITAR NACIONAL (OBRIGATÓRIA & SECRETA)"}
+                </span>
                 <small>
-                  {#if selectedDoctrineId}
+                  {#if customRules.classicMode}
+                    Modo Clássico (War/Risk) ativo: todas as nações iniciam simétricas sem doutrinas, recursos ou construções.
+                  {:else if selectedDoctrineId}
                     Doutrina selecionada em sigilo para esta campanha
                   {:else}
                     Leia e selecione uma doutrina abaixo antes de iniciar a partida
@@ -610,45 +696,52 @@
                 </small>
               </div>
 
-              <div class="doctrine-cards-grid">
-                {#each DOCTRINE_LIST as doc}
-                  {@const isSelected = selectedDoctrineId === doc.id}
-                  {@const otherDoctrines = lobbyPlayers.filter((p) => p.token !== myPlayerId).map((p) => p.doctrineId)}
-                  {@const isAvailable = isSelected || isDoctrineAvailableInLobby(doc.id, otherDoctrines)}
-                  <button
-                    type="button"
-                    class="doctrine-choice-card"
-                    class:selected={isSelected}
-                    class:unselected-blank={!selectedDoctrineId}
-                    class:full-width={doc.id === "extermination"}
-                    disabled={!isAvailable}
-                    aria-pressed={isSelected}
-                    style="--doc-accent: {doc.accentColor};"
-                    onclick={() => selectDoctrine(doc.id)}
-                  >
-                    <DoctrineCrest doctrineId={doc.id} size={32} />
-                    <div class="doc-choice-meta">
-                      <div class="doc-title-row">
-                        <strong
+              {#if customRules.classicMode}
+                <div class="classic-doctrine-notice">
+                  <Icon name="shield" size={16} />
+                  <span>Combate 100% Clássico (Infantaria + Cartas Tradicionais). Pronto para iniciar sem seleção de doutrina.</span>
+                </div>
+              {:else}
+                <div class="doctrine-cards-grid">
+                  {#each DOCTRINE_LIST as doc}
+                    {@const isSelected = selectedDoctrineId === doc.id}
+                    {@const otherDoctrines = lobbyPlayers.filter((p) => p.token !== myPlayerId).map((p) => p.doctrineId)}
+                    {@const isAvailable = isSelected || isDoctrineAvailableInLobby(doc.id, otherDoctrines, customRules.doctrineLimitEnabled)}
+                    <button
+                      type="button"
+                      class="doctrine-choice-card"
+                      class:selected={isSelected}
+                      class:unselected-blank={!selectedDoctrineId}
+                      class:full-width={doc.id === "extermination"}
+                      disabled={!isAvailable}
+                      aria-pressed={isSelected}
+                      style="--doc-accent: {doc.accentColor};"
+                      onclick={() => selectDoctrine(doc.id)}
+                    >
+                      <DoctrineCrest doctrineId={doc.id} size={32} />
+                      <div class="doc-choice-meta">
+                        <div class="doc-title-row">
+                          <strong
+                            >{i18n.locale === "en"
+                              ? doc.nameEn
+                              : doc.namePt}</strong
+                          >
+                          {#if isSelected}
+                            <span class="doc-active-pill">ATIVA</span>
+                          {:else if !isAvailable}
+                            <span class="doc-active-pill limit-pill">LIMITE</span>
+                          {/if}
+                        </div>
+                        <small
                           >{i18n.locale === "en"
-                            ? doc.nameEn
-                            : doc.namePt}</strong
+                            ? doc.summaryEn
+                            : doc.summaryPt}</small
                         >
-                        {#if isSelected}
-                          <span class="doc-active-pill">ATIVA</span>
-                        {:else if !isAvailable}
-                          <span class="doc-active-pill limit-pill">LIMITE</span>
-                        {/if}
                       </div>
-                      <small
-                        >{i18n.locale === "en"
-                          ? doc.summaryEn
-                          : doc.summaryPt}</small
-                      >
-                    </div>
-                  </button>
-                {/each}
-              </div>
+                    </button>
+                  {/each}
+                </div>
+              {/if}
             </div>
           </div>
 
@@ -684,14 +777,187 @@
         </div>
 
         {#if competitionMode === "custom"}
+          <!-- PRESETS & SANDBOX DE REGRAS (HEGEM-67 & HEGEM-110) -->
+          <div class="rules-sandbox-panel full-width">
+            <div class="section-subhead">
+              <div class="subhead-title-row">
+                <span>MODULARIDADE DE REGRAS & PRESETS DA SALA</span>
+                <span class="scenario-mode-tag">
+                  {amIHost ? "ANFITRIÃO CONFIGURA" : "SOMENTE LEITURA"}
+                </span>
+              </div>
+              <small>
+                Escolha um modo oficial com 1 clique (incluindo War Clássico puro) ou personalize economia, tensão e temporizador.
+              </small>
+            </div>
+
+            <div class="presets-row">
+              {#each Object.values(RULES_PRESETS) as preset}
+                {@const isActive = customRules.preset === preset.id}
+                <button
+                  type="button"
+                  class="preset-card-btn"
+                  class:active={isActive}
+                  disabled={!amIHost}
+                  onclick={() => applyPreset(preset.id)}
+                >
+                  <div class="preset-card-head">
+                    <strong>{i18n.locale === "en" ? preset.nameEn : preset.namePt}</strong>
+                    {#if isActive}
+                      <span class="preset-active-pill">ATIVO</span>
+                    {/if}
+                  </div>
+                  <small>{i18n.locale === "en" ? preset.descEn : preset.descPt}</small>
+                </button>
+              {/each}
+            </div>
+
+            <div class="sandbox-controls-grid">
+              <label class="sandbox-field toggle-field">
+                <span>Modo Clássico (War/Risk Puro)</span>
+                <input
+                  type="checkbox"
+                  checked={customRules.classicMode}
+                  disabled={!amIHost}
+                  onchange={(e) =>
+                    patchCustomRules({
+                      classicMode: (e.currentTarget as HTMLInputElement).checked,
+                    })}
+                />
+              </label>
+
+              <label class="sandbox-field toggle-field">
+                <span>Limite de Doutrina por Sala</span>
+                <input
+                  type="checkbox"
+                  checked={customRules.doctrineLimitEnabled}
+                  disabled={!amIHost || customRules.classicMode}
+                  onchange={(e) =>
+                    patchCustomRules({
+                      doctrineLimitEnabled: (e.currentTarget as HTMLInputElement).checked,
+                    })}
+                />
+              </label>
+
+              <label class="sandbox-field">
+                <span>Economia / Renda ({customRules.economyMultiplier}x)</span>
+                <select
+                  value={customRules.economyMultiplier}
+                  disabled={!amIHost || customRules.classicMode}
+                  onchange={(e) =>
+                    patchCustomRules({
+                      economyMultiplier: Number((e.currentTarget as HTMLSelectElement).value),
+                    })}
+                >
+                  <option value={0.5}>0.5x (Escassez)</option>
+                  <option value={1}>1x (Padrão)</option>
+                  <option value={1.5}>1.5x (Abundante)</option>
+                  <option value={2}>2x (Superpotência)</option>
+                </select>
+              </label>
+
+              <label class="sandbox-field">
+                <span>Tensão Mundial ({customRules.worldTensionSpeed}x)</span>
+                <select
+                  value={customRules.worldTensionSpeed}
+                  disabled={!amIHost || customRules.classicMode}
+                  onchange={(e) =>
+                    patchCustomRules({
+                      worldTensionSpeed: Number((e.currentTarget as HTMLSelectElement).value),
+                    })}
+                >
+                  <option value={0.5}>0.5x (Lenta)</option>
+                  <option value={1}>1x (Padrão)</option>
+                  <option value={1.5}>1.5x (Tensa)</option>
+                  <option value={2}>2x (Explosiva)</option>
+                </select>
+              </label>
+
+              <label class="sandbox-field">
+                <span>Tempo Turno 1 ({customRules.turnOneTimerSeconds}s)</span>
+                <select
+                  value={customRules.turnOneTimerSeconds}
+                  disabled={!amIHost}
+                  onchange={(e) =>
+                    patchCustomRules({
+                      turnOneTimerSeconds: Number((e.currentTarget as HTMLSelectElement).value),
+                    })}
+                >
+                  <option value={30}>30s (Blitz)</option>
+                  <option value={45}>45s</option>
+                  <option value={60}>60s (Padrão)</option>
+                  <option value={90}>90s</option>
+                  <option value={120}>120s</option>
+                  <option value={180}>180s</option>
+                </select>
+              </label>
+
+              <label class="sandbox-field">
+                <span>Tempo Turno Geral ({customRules.turnTimerSeconds}s)</span>
+                <select
+                  value={customRules.turnTimerSeconds}
+                  disabled={!amIHost}
+                  onchange={(e) =>
+                    patchCustomRules({
+                      turnTimerSeconds: Number((e.currentTarget as HTMLSelectElement).value),
+                    })}
+                >
+                  <option value={60}>60s (Blitz)</option>
+                  <option value={90}>90s</option>
+                  <option value={120}>120s (Padrão)</option>
+                  <option value={180}>180s</option>
+                  <option value={240}>240s</option>
+                </select>
+              </label>
+
+              <label class="sandbox-field">
+                <span>Custo de Obras ({customRules.buildingCostMultiplier}x)</span>
+                <select
+                  value={customRules.buildingCostMultiplier}
+                  disabled={!amIHost || customRules.classicMode}
+                  onchange={(e) =>
+                    patchCustomRules({
+                      buildingCostMultiplier: Number((e.currentTarget as HTMLSelectElement).value),
+                    })}
+                >
+                  <option value={0.5}>0.5x (Barato)</option>
+                  <option value={0.75}>0.75x (Desconto)</option>
+                  <option value={1}>1x (Padrão)</option>
+                  <option value={1.5}>1.5x (Caro)</option>
+                </select>
+              </label>
+
+              <label class="sandbox-field">
+                <span>Carta com Ouro ({customRules.supplyCardGoldCost} Ouro)</span>
+                <select
+                  value={customRules.supplyCardGoldCost}
+                  disabled={!amIHost || customRules.classicMode}
+                  onchange={(e) =>
+                    patchCustomRules({
+                      supplyCardGoldCost: Number((e.currentTarget as HTMLSelectElement).value),
+                    })}
+                >
+                  <option value={2}>2 Ouro</option>
+                  <option value={3}>3 Ouro</option>
+                  <option value={4}>4 Ouro (Padrão)</option>
+                  <option value={6}>6 Ouro</option>
+                </select>
+              </label>
+            </div>
+          </div>
+
           <div class="scenarios-picker-panel full-width">
             <div class="section-subhead">
               <div class="subhead-title-row">
                 <span>CENÁRIOS TÁTICOS PRESETADOS (CUSTOM LOBBY)</span>
-                <span class="scenario-mode-tag">CUSTOM ONLY</span>
+                <span class="scenario-mode-tag">
+                  {customRules.classicMode ? "DESATIVADO NO CLÁSSICO" : "CUSTOM ONLY"}
+                </span>
               </div>
               <small>
-                {#if amIHost}
+                {#if customRules.classicMode}
+                  Modo Clássico ativo: todos os jogadores começam com distribuição equilibrada de Infantaria.
+                {:else if amIHost}
                   Selecione um cenário geopolítico pré-montado com distribuição assimétrica e pressão estratégica
                 {:else}
                   Configuração definida pelo anfitrião da sala (sala customizada)
@@ -706,8 +972,8 @@
                   type="button"
                   class="scenario-choice-card"
                   class:selected={isSelected}
-                  disabled={!amIHost}
-                  onclick={() => amIHost && onSelectScenario && onSelectScenario(sc.id)}
+                  disabled={!amIHost || customRules.classicMode}
+                  onclick={() => amIHost && !customRules.classicMode && onSelectScenario && onSelectScenario(sc.id)}
                 >
                   <div class="scenario-card-top">
                     <span
@@ -1294,6 +1560,7 @@
     gap: 12px;
   }
   .slot-card {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 10px;
@@ -1301,12 +1568,74 @@
     min-width: 0;
     width: 100%;
     box-sizing: border-box;
-    overflow: hidden;
+    overflow: visible;
     padding: 10px 12px;
     background: rgba(5, 9, 18, 0.85);
     border: 1px solid rgba(148, 163, 184, 0.22);
     border-left: 3px solid #eab308;
     border-radius: 6px;
+  }
+  .slot-speech-bubble {
+    position: absolute;
+    left: 14px;
+    bottom: calc(100% + 7px);
+    max-width: min(260px, 92%);
+    padding: 5px 10px;
+    background: rgba(15, 23, 42, 0.96);
+    border: 1px solid rgba(250, 204, 21, 0.65);
+    border-radius: 8px;
+    color: #f8fafc;
+    font-size: 0.74rem;
+    font-weight: 600;
+    line-height: 1.3;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.75);
+    pointer-events: none;
+    z-index: 20;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    animation: speechPopIn 0.18s ease-out;
+  }
+  .slot-speech-bubble::after {
+    content: "";
+    position: absolute;
+    left: 14px;
+    top: 100%;
+    border-width: 6px 6px 0 6px;
+    border-style: solid;
+    border-color: rgba(250, 204, 21, 0.65) transparent transparent transparent;
+  }
+  @keyframes speechPopIn {
+    from {
+      opacity: 0;
+      transform: translateY(4px) scale(0.95);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+  .quick-chat-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-left: auto;
+  }
+  .quick-chat-pill {
+    font-size: 0.65rem;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 999px;
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    background: rgba(15, 23, 42, 0.85);
+    color: #bae6fd;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .quick-chat-pill:hover {
+    background: rgba(56, 189, 248, 0.18);
+    border-color: #38bdf8;
+    color: #f8fafc;
   }
   .slot-card.is-me {
     background: linear-gradient(
@@ -2019,8 +2348,110 @@
   }
 
   @media (max-width: 768px) {
-    .scenarios-cards-grid {
+    .scenarios-cards-grid,
+    .presets-row,
+    .sandbox-controls-grid {
       grid-template-columns: 1fr;
     }
+  }
+
+  .classic-doctrine-notice {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 14px;
+    background: rgba(234, 179, 8, 0.08);
+    border: 1px solid rgba(234, 179, 8, 0.35);
+    border-radius: 6px;
+    color: #fde047;
+    font-size: 0.78rem;
+  }
+  .rules-sandbox-panel {
+    background: rgba(8, 14, 27, 0.86);
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    border-radius: 8px;
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .presets-row {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .preset-card-btn {
+    text-align: left;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 9px 11px;
+    border-radius: 6px;
+    background: rgba(5, 10, 20, 0.85);
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    color: #e2e8f0;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .preset-card-btn:hover:not(:disabled) {
+    border-color: rgba(234, 179, 8, 0.55);
+  }
+  .preset-card-btn.active {
+    border-color: #eab308;
+    background: rgba(234, 179, 8, 0.12);
+  }
+  .preset-card-btn:disabled {
+    opacity: 0.72;
+    cursor: not-allowed;
+  }
+  .preset-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    font-size: 0.8rem;
+    color: #f8fafc;
+  }
+  .preset-active-pill {
+    font-size: 0.58rem;
+    font-weight: 800;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: #10b981;
+    color: #052e16;
+  }
+  .preset-card-btn small {
+    font-size: 0.68rem;
+    line-height: 1.35;
+    color: #94a3b8;
+  }
+  .sandbox-controls-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .sandbox-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 7px 10px;
+    border-radius: 5px;
+    background: rgba(5, 9, 18, 0.7);
+    border: 1px solid rgba(148, 163, 184, 0.16);
+    font-size: 0.7rem;
+    color: #cbd5e1;
+  }
+  .sandbox-field.toggle-field {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .sandbox-field select {
+    background: rgba(15, 23, 42, 0.95);
+    border: 1px solid rgba(148, 163, 184, 0.3);
+    border-radius: 4px;
+    color: #f8fafc;
+    font-size: 0.72rem;
+    padding: 3px 6px;
   }
 </style>

@@ -9,25 +9,28 @@ import {
   SCENARIO_BY_ID,
   SESSION_REPLACED_CLOSE_CODE,
   isDoctrineAvailableInLobby,
+  normalizeCustomRules,
   type AuthUser,
   type CompetitionMode,
+  type CustomRulesConfig,
   type DoctrineId,
   type GameAction,
   type GameState,
   type MatchOrigin,
+  type PauseStateView,
   type PlayerColor,
   type TacticalScenarioId,
 } from "@hegemonia/shared";
 import { authenticateToken } from "./auth-service.js";
 import { sessionTokenFromHeaders } from "./http.js";
-import { CLASSIC_MAP, isSeaLink } from "@hegemonia/maps";
+import { CLASSIC_MAP } from "@hegemonia/maps";
 import {
   applyAction,
-  checkNavalBlockade,
   createGame,
   createPlayerView,
   createSeededRng,
   findValidTradeTriplet,
+  planNextBotAction,
   type SeededRng,
 } from "@hegemonia/engine";
 import { appendMatchEvent, createMatch, startMatch } from "./db.js";
@@ -101,7 +104,11 @@ export class HegemoniaRoom extends Room {
   private seasonId?: string;
   private expectedUserIds = new Set<string>();
   private rulesConfig: Record<string, unknown> = {};
+  private customRules: CustomRulesConfig = normalizeCustomRules();
   private selectedScenarioId: TacticalScenarioId = "standard";
+  private pauseState: PauseStateView | null = null;
+  private pausedRemainingMs = 0;
+  private autoPausedThisRoundByPlayer = new Set<string>();
 
   onCreate(options: HegemoniaRoomOptions) {
     this.autoDispose = false;
@@ -110,6 +117,8 @@ export class HegemoniaRoom extends Room {
     this.seasonId = options.seasonId;
     this.expectedUserIds = new Set(options.expectedUserIds ?? []);
     this.rulesConfig = options.rulesConfig ?? {};
+    this.customRules = normalizeCustomRules(this.rulesConfig);
+    this.turnTimerSeconds = this.customRules.turnTimerSeconds;
     if (options.scenarioId && options.scenarioId in SCENARIO_BY_ID) {
       this.selectedScenarioId = options.scenarioId;
     } else if (
@@ -160,6 +169,12 @@ export class HegemoniaRoom extends Room {
 
     this.onMessage("choose_doctrine", (client, payload: { doctrineId: string }) => {
       if (this.gameState) return;
+      if (this.customRules.classicMode) {
+        client.send("error_msg", {
+          message: "Doutrinas Militares estão desativadas no Modo Clássico (War/Risk).",
+        });
+        return;
+      }
       const parsed = DoctrineIdSchema.safeParse(payload?.doctrineId);
       if (!parsed.success) return;
       const player = this.lobbyPlayers.find((p) => p.sessionId === client.sessionId);
@@ -167,7 +182,13 @@ export class HegemoniaRoom extends Room {
         const otherDoctrines = this.lobbyPlayers
           .filter((p) => p.sessionId !== client.sessionId)
           .map((p) => p.doctrineId);
-        if (!isDoctrineAvailableInLobby(parsed.data, otherDoctrines)) {
+        if (
+          !isDoctrineAvailableInLobby(
+            parsed.data,
+            otherDoctrines,
+            this.customRules.doctrineLimitEnabled
+          )
+        ) {
           const limit = parsed.data === "extermination" ? 1 : 2;
           client.send("error_msg", {
             message: `Limite atingido: esta doutrina permite no máximo ${limit} general(is) por partida.`,
@@ -179,13 +200,31 @@ export class HegemoniaRoom extends Room {
       }
     });
 
+    this.onMessage("update_rules_config", (client, payload: unknown) => {
+      if (this.gameState) return;
+      const caller = this.lobbyPlayers.find((p) => p.sessionId === client.sessionId);
+      if (!caller?.isHost || this.competitionMode !== "custom") return;
+      const prevClassic = this.customRules.classicMode;
+      this.customRules = normalizeCustomRules(
+        payload && typeof payload === "object"
+          ? { ...this.customRules, ...(payload as Record<string, unknown>) }
+          : {}
+      );
+      this.turnTimerSeconds = this.customRules.turnTimerSeconds;
+      if (this.customRules.classicMode && !prevClassic) {
+        this.selectedScenarioId = "standard";
+      }
+      this.broadcastRoomState();
+    });
+
     this.onMessage("set_turn_timer", (client, payload: { seconds: number }) => {
       if (this.gameState) return;
       const caller = this.lobbyPlayers.find((p) => p.sessionId === client.sessionId);
       if (!caller?.isHost) return;
       const sec = Number(payload?.seconds);
-      if (sec >= 15 && sec <= 300) {
+      if (sec >= 30 && sec <= 300) {
         this.turnTimerSeconds = sec;
+        this.customRules = { ...this.customRules, turnTimerSeconds: sec };
         this.broadcastRoomState();
       }
     });
@@ -247,7 +286,7 @@ export class HegemoniaRoom extends Room {
       if (this.gameState) return;
       const player = this.lobbyPlayers.find((p) => p.sessionId === client.sessionId);
       if (player && !player.isBot) {
-        if (payload?.ready && !player.doctrineId) {
+        if (payload?.ready && !this.customRules.classicMode && !player.doctrineId) {
           client.send("error_msg", {
             message: "Selecione uma Doutrina Militar Nacional antes de confirmar prontidão.",
           });
@@ -298,7 +337,9 @@ export class HegemoniaRoom extends Room {
           client.send("error_msg", { message: "São necessários pelo menos 2 jogadores." });
           return;
         }
-        const missingDoctrine = this.lobbyPlayers.filter((p) => !p.isBot && !p.doctrineId);
+        const missingDoctrine = this.customRules.classicMode
+          ? []
+          : this.lobbyPlayers.filter((p) => !p.isBot && !p.doctrineId);
         if (missingDoctrine.length > 0) {
           client.send("error_msg", {
             message: "Todos os generais devem selecionar uma Doutrina Militar Nacional antes do início.",
@@ -325,16 +366,18 @@ export class HegemoniaRoom extends Room {
             id: p.token,
             name: p.name,
             color: p.color,
-            doctrineId:
-              p.doctrineId ??
-              (p.isBot ? DOCTRINE_LIST[idx % DOCTRINE_LIST.length].id : null),
+            doctrineId: this.customRules.classicMode
+              ? null
+              : (p.doctrineId ??
+                (p.isBot ? DOCTRINE_LIST[idx % DOCTRINE_LIST.length].id : null)),
             recentObjectiveIds: this.recentObjectivesByUser.get(p.userId ?? p.token),
           }));
           const provisional = createGame({
             id: "pending",
             seed: this.secretSeed,
             players,
-            scenarioId: this.selectedScenarioId,
+            scenarioId: this.customRules.classicMode ? "standard" : this.selectedScenarioId,
+            rulesConfig: this.customRules,
           });
           this.matchId = await createMatch({
             roomCode: this.roomCode,
@@ -342,24 +385,32 @@ export class HegemoniaRoom extends Room {
             competitionMode: this.competitionMode,
             matchOrigin: this.matchOrigin,
             seasonId: this.seasonId,
-            rulesConfig: { ...this.rulesConfig, scenarioId: this.selectedScenarioId },
+            rulesConfig: {
+              ...this.rulesConfig,
+              ...this.customRules,
+              scenarioId: this.selectedScenarioId,
+            },
           });
           const nextState = createGame({
             id: this.matchId,
             seed: this.secretSeed,
             players,
-            scenarioId: this.selectedScenarioId,
+            scenarioId: this.customRules.classicMode ? "standard" : this.selectedScenarioId,
+            rulesConfig: this.customRules,
           });
           for (const gp of nextState.players) {
             const lobbyEntry = players.find((lp) => lp.id === gp.id);
-            if (lobbyEntry?.doctrineId) {
+            if (!this.customRules.classicMode && lobbyEntry?.doctrineId) {
               gp.doctrineId = lobbyEntry.doctrineId;
             }
             const fullLobbyEntry = this.lobbyPlayers.find((lp) => lp.token === gp.id);
-            if (fullLobbyEntry && !fullLobbyEntry.isBot) {
+            if (fullLobbyEntry && !fullLobbyEntry.isBot && !this.customRules.classicMode) {
               gp.pendingObjectiveChoice = true;
             }
           }
+          this.pauseState = null;
+          this.pausedRemainingMs = 0;
+          this.autoPausedThisRoundByPlayer.clear();
           await startMatch(
             this.matchId,
             nextState,
@@ -405,9 +456,28 @@ export class HegemoniaRoom extends Room {
         this.secretSeed = randomBytes(16).toString("hex");
         this.rng = createSeededRng(this.secretSeed);
         this.turnDeadline = 0;
+        this.pauseState = null;
+        this.pausedRemainingMs = 0;
+        this.autoPausedThisRoundByPlayer.clear();
         this.syncMetadata();
         this.broadcastRoomState();
       });
+    });
+
+    this.onMessage("toggle_pause", (client) => {
+      if (!this.gameState || this.gameState.phase === "game_over") return;
+      const caller = this.lobbyPlayers.find((p) => p.sessionId === client.sessionId);
+      if (!caller?.isHost || this.competitionMode !== "custom") {
+        client.send("error_msg", {
+          message: "Apenas o anfitrião da sala customizada pode pausar/retomar a partida.",
+        });
+        return;
+      }
+      if (this.pauseState?.paused) {
+        this.resumeMatch(`Partida retomada pelo anfitrião (${caller.name})`);
+      } else {
+        this.pauseMatch("manual", caller.token, caller.name);
+      }
     });
 
     this.onMessage("game_action", (client, rawAction: unknown) => {
@@ -419,6 +489,12 @@ export class HegemoniaRoom extends Room {
 
       this.enqueueAction(async () => {
         if (!this.gameState) return;
+        if (this.pauseState?.paused) {
+          client.send("error_msg", {
+            message: "Partida em pausa tática. Aguarde a retomada do cronômetro.",
+          });
+          return;
+        }
         const lobbyPlayer = this.lobbyPlayers.find((p) => p.sessionId === client.sessionId);
         if (!lobbyPlayer) return;
         try {
@@ -449,6 +525,12 @@ export class HegemoniaRoom extends Room {
 
     this.timerInterval = setInterval(() => {
       if (!this.gameState || this.gameState.phase === "game_over") return;
+      if (this.pauseState?.paused) {
+        if (this.pauseState.resumeDeadline && Date.now() >= this.pauseState.resumeDeadline) {
+          this.resumeMatch("Tempo de tolerância de reconexão encerrado");
+        }
+        return;
+      }
       if (Date.now() > this.turnDeadline) {
         this.enqueueAction(() => this.handleTurnTimeout());
       }
@@ -511,7 +593,15 @@ export class HegemoniaRoom extends Room {
       synchronizeHumanHost(this.lobbyPlayers);
       this.syncMetadata();
       previousClient?.leave(SESSION_REPLACED_CLOSE_CODE, "Sessão substituída por uma nova conexão.");
-      this.broadcastRoomState();
+      if (
+        this.pauseState?.paused &&
+        this.pauseState.reason === "disconnect" &&
+        this.pauseState.pausedPlayerId === existing.token
+      ) {
+        this.resumeMatch(`${existing.name} reconectou-se à sala`);
+      } else {
+        this.broadcastRoomState();
+      }
       return;
     }
 
@@ -562,9 +652,19 @@ export class HegemoniaRoom extends Room {
     }
 
     player.connected = false;
-    if (this.gameState) {
+    if (this.gameState && this.gameState.phase !== "game_over") {
       const gp = this.gameState.players.find((p) => p.id === player.token);
       if (gp) gp.connected = false;
+      const activePlayer = this.gameState.players[this.gameState.turnIndex];
+      if (
+        !player.isBot &&
+        activePlayer?.id === player.token &&
+        !this.pauseState?.paused &&
+        !this.autoPausedThisRoundByPlayer.has(player.token)
+      ) {
+        this.autoPausedThisRoundByPlayer.add(player.token);
+        this.pauseMatch("disconnect", player.token, player.name, 60_000);
+      }
     }
 
     const existingTimer = this.disconnectTimeouts.get(player.token);
@@ -648,15 +748,55 @@ export class HegemoniaRoom extends Room {
     });
   }
 
+  private pauseMatch(
+    reason: "disconnect" | "manual",
+    pausedPlayerId?: string | null,
+    pausedPlayerName?: string | null,
+    durationMs?: number
+  ) {
+    if (!this.gameState || this.gameState.phase === "game_over") return;
+    this.pausedRemainingMs = Math.max(5000, this.turnDeadline - Date.now());
+    this.pauseState = {
+      paused: true,
+      reason,
+      pausedPlayerId: pausedPlayerId ?? null,
+      pausedPlayerName: pausedPlayerName ?? null,
+      resumeDeadline: durationMs ? Date.now() + durationMs : null,
+    };
+    const msg =
+      reason === "disconnect"
+        ? `⏸️ AUTO-PAUSE (60s): ${pausedPlayerName ?? "Comandante"} perdeu conexão no próprio turno. Aguardando reconexão...`
+        : `⏸️ PAUSA TÁTICA: Cronômetro pausado por ${pausedPlayerName ?? "Anfitrião"}.`;
+    this.gameState.log.push(msg);
+    this.broadcastRoomState();
+  }
+
+  private resumeMatch(reasonText?: string) {
+    if (!this.pauseState?.paused) return;
+    this.turnDeadline = Date.now() + Math.max(5000, this.pausedRemainingMs);
+    this.pauseState = null;
+    this.pausedRemainingMs = 0;
+    if (this.gameState) {
+      this.gameState.log.push(
+        `▶️ PARTIDA RETOMADA${reasonText ? `: ${reasonText}` : ""}.`
+      );
+    }
+    this.broadcastRoomState();
+    this.checkAndRunBotTurn();
+  }
+
   private resetTurnTimer() {
     const isFirstRound = this.gameState ? this.gameState.round === 1 : true;
-    const durationSeconds = isFirstRound ? 60 : this.turnTimerSeconds;
+    const durationSeconds = isFirstRound
+      ? this.customRules.turnOneTimerSeconds
+      : this.customRules.turnTimerSeconds;
     this.turnDeadline = Date.now() + durationSeconds * 1000;
   }
 
   private async executePlayerAction(playerId: string, action: GameAction): Promise<void> {
     if (!this.gameState) return;
     const prevTurn = this.gameState.turnIndex;
+    const prevRound = this.gameState.round;
     const nextState = applyAction(this.gameState, playerId, action, this.rng, CLASSIC_MAP);
     const nextStep = this.stepCounter + 1;
 
@@ -685,6 +825,9 @@ export class HegemoniaRoom extends Room {
     this.gameState = nextState;
     this.stepCounter = nextStep;
 
+    if (nextState.round !== prevRound) {
+      this.autoPausedThisRoundByPlayer.clear();
+    }
     if (nextState.turnIndex !== prevTurn) {
       this.resetTurnTimer();
     }
@@ -798,13 +941,13 @@ export class HegemoniaRoom extends Room {
   }
 
   private checkAndRunBotTurn() {
-    if (!this.gameState || this.gameState.phase === "game_over") return;
+    if (!this.gameState || this.gameState.phase === "game_over" || this.pauseState?.paused) return;
     const current = this.gameState.players[this.gameState.turnIndex];
     const lobbyEntry = this.lobbyPlayers.find((p) => p.token === current.id);
     if (!lobbyEntry?.isBot) return;
 
     setTimeout(() => {
-      if (!this.gameState || this.gameState.phase === "game_over") return;
+      if (!this.gameState || this.gameState.phase === "game_over" || this.pauseState?.paused) return;
       const active = this.gameState.players[this.gameState.turnIndex];
       if (active.id === current.id) {
         this.enqueueAction(() => this.runSingleBotStep(current.id));
@@ -813,97 +956,21 @@ export class HegemoniaRoom extends Room {
   }
 
   private async runSingleBotStep(playerId: string): Promise<void> {
-    if (!this.gameState || this.gameState.phase === "game_over") return;
+    if (!this.gameState || this.gameState.phase === "game_over" || this.pauseState?.paused) return;
     const player = this.gameState.players.find((p) => p.id === playerId);
     if (!player) return;
-    const mapById = new Map(CLASSIC_MAP.territories.map((t) => [t.id, t]));
 
     try {
-      if (player.pendingObjectiveChoice && player.availableObjectives?.length) {
-        await this.executePlayerAction(playerId, {
-          type: "choose_objective",
-          objectiveId: player.availableObjectives[0].id,
-        });
-        return;
-      }
+      const action = planNextBotAction(this.gameState, playerId, CLASSIC_MAP);
+      if (!action) return;
 
-      const triplet = findValidTradeTriplet(player.cards);
-      if (triplet && (this.gameState.phase === "deploy" || player.cards.length >= 5)) {
-        await this.executePlayerAction(playerId, { type: "trade_cards", cardIds: triplet });
-        return;
-      }
-
-      if (this.gameState.phase === "deploy" && player.unplacedArmies > 0) {
-        const target = this.pickDeployableTerritory(this.gameState, playerId);
-        if (!target) {
-          player.unplacedArmies = 0;
-          await this.executePlayerAction(playerId, { type: "end_turn" });
-          return;
-        }
-        if (target.isEncircled) {
+      if (action.type === "deploy") {
+        const target = this.gameState.territories[action.territoryId];
+        if (target?.isEncircled) {
           target.isEncircled = false;
         }
-        await this.executePlayerAction(playerId, {
-          type: "deploy",
-          territoryId: target.id,
-          armies: player.unplacedArmies,
-        });
-        return;
       }
-
-      if (this.gameState.phase === "deploy" && player.unplacedArmies === 0 && this.gameState.round > 1) {
-        await this.executePlayerAction(playerId, { type: "end_deploy" });
-        return;
-      }
-
-      if (this.gameState.pendingConquest) {
-        await this.executePlayerAction(playerId, {
-          type: "occupy",
-          armies: this.gameState.pendingConquest.maxMove,
-        });
-        return;
-      }
-
-      if (this.gameState.phase === "attack") {
-        const owned = Object.values(this.gameState.territories).filter(
-          (t) =>
-            t.ownerId === playerId &&
-            t.armies >= 3 &&
-            !(t.conqueredTurnRound === this.gameState!.round && !t.blitzkriegAvailable)
-        );
-        for (const from of owned) {
-          const enemies = mapById
-            .get(from.id)!
-            .neighbors.map((n) => this.gameState!.territories[n])
-            .filter((n) => {
-              if (!n || n.ownerId === playerId || from.armies <= n.armies) return false;
-              if (isSeaLink(from.id, n.id)) {
-                const blockade = checkNavalBlockade(this.gameState!, from.id, n.id, playerId);
-                if (blockade.isBlockaded) return false;
-              }
-              return true;
-            });
-          if (enemies.length > 0) {
-            enemies.sort((a, b) => a.armies - b.armies);
-            try {
-              await this.executePlayerAction(playerId, {
-                type: "attack",
-                fromTerritoryId: from.id,
-                toTerritoryId: enemies[0].id,
-              });
-              return;
-            } catch {
-              continue;
-            }
-          }
-        }
-        await this.executePlayerAction(playerId, { type: "end_attack" });
-        return;
-      }
-
-      if (this.gameState.phase === "maneuver") {
-        await this.executePlayerAction(playerId, { type: "end_turn" });
-      }
+      await this.executePlayerAction(playerId, action);
     } catch {
       if (!this.gameState) return;
       if (this.gameState.pendingConquest) {
@@ -930,8 +997,13 @@ export class HegemoniaRoom extends Room {
       competitionMode: this.competitionMode,
       matchOrigin: this.matchOrigin,
       turnDeadline: this.turnDeadline,
-      turnTimerSeconds: this.gameState?.round === 1 ? 60 : this.turnTimerSeconds,
+      turnTimerSeconds:
+        this.gameState?.round === 1
+          ? this.customRules.turnOneTimerSeconds
+          : this.customRules.turnTimerSeconds,
       selectedScenarioId: this.selectedScenarioId,
+      customRules: this.customRules,
+      pauseState: this.pauseState,
       myPlayerId: viewerToken,
       lobbyPlayers: this.lobbyPlayers.map((p) => ({
         token: p.token,
@@ -942,7 +1014,9 @@ export class HegemoniaRoom extends Room {
         isHost: p.isHost,
         isBot: p.isBot,
         connected: p.connected,
-        isReady: Boolean((p.isHost && p.doctrineId) || p.isReady),
+        isReady: Boolean(
+          (p.isHost && (this.customRules.classicMode || p.doctrineId)) || p.isReady
+        ),
         userId: p.userId ?? null,
         username: p.username ?? null,
         avatarUrl: p.avatarUrl ?? null,

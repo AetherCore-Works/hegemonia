@@ -10,10 +10,12 @@
     UNIT_COSTS,
     addUnits,
     calculateObjectiveProgress,
+    checkNavalBlockade,
     createGame,
     emptyUnitCounts,
     getMovedInUnits,
     getReachableManeuverTargets,
+    getTerritoryBuildingLevel,
     getTerritoryUnits,
     hasTerritoryBuilding,
     isConnectedByFriendlyPath,
@@ -22,6 +24,7 @@
     totalUnits,
   } from "@hegemonia/engine";
   import {
+    DEFAULT_CUSTOM_RULES,
     IDLE_MATCHMAKING_STATUS,
     MATCHMAKING_RULESET_VERSION,
     SESSION_REPLACED_CLOSE_CODE,
@@ -30,16 +33,22 @@
     AirMissionType,
     BuildingType,
     CompetitionMode,
+    CustomRulesConfig,
     GameState,
     MatchOrigin,
     MatchmakingStatus,
+    PauseStateView,
     PublicQueueMode,
     TacticalScenarioId,
     UnitCounts,
     UnitType,
   } from "@hegemonia/shared";
   import { sound } from "./audio.js";
-  import { estimateAttackWinOdds } from "./odds.js";
+  import {
+    describeCombatOddsModifiers,
+    estimateAttackWinOdds,
+    type CombatOddsModifiers,
+  } from "./odds.js";
   import { api, ApiError } from "./lib/api";
   import { auth } from "./lib/auth.svelte";
   import { ui } from "./lib/ui.svelte";
@@ -134,6 +143,8 @@
   let competitionMode = $state<CompetitionMode>("custom");
   let matchOrigin = $state<MatchOrigin>("lobby");
   let selectedScenarioId = $state<TacticalScenarioId>("standard");
+  let customRules = $state<CustomRulesConfig>({ ...DEFAULT_CUSTOM_RULES });
+  let pauseState = $state<PauseStateView | null>(null);
   let showTutorialModal = $state<boolean>(false);
   let matchmakingPollTimer: ReturnType<typeof setTimeout> | null = null;
   let matchmakingPollGeneration = 0;
@@ -342,13 +353,51 @@
     return null;
   });
 
+  let currentAttackModifiers = $derived.by<CombatOddsModifiers | null>(() => {
+    if (!game || !selectedFromId || !selectedToId) return null;
+    const fromT = game.territories[selectedFromId];
+    const toT = game.territories[selectedToId];
+    if (!fromT || !toT) return null;
+    const attPlayer = game.players.find((p) => p.id === fromT.ownerId);
+    const defPlayer = game.players.find((p) => p.id === toT.ownerId);
+    const defTerrCount = defPlayer
+      ? Object.values(game.territories).filter((t) => t.ownerId === defPlayer.id).length
+      : 0;
+    const defUnits = getTerritoryUnits(toT);
+    const isSea = isSeaLink(selectedFromId, selectedToId);
+    const naval = isSea && attPlayer ? checkNavalBlockade(game, selectedFromId, selectedToId, attPlayer.id) : null;
+    const assaultedSet = new Set(attPlayer?.assaultedTargetsThisTurn ?? []);
+    return {
+      attackerDoctrine: attPlayer?.doctrineId ?? null,
+      defenderDoctrine: defPlayer?.doctrineId ?? null,
+      attackerUnits: selectedUnits,
+      defenderUnits: defUnits,
+      attackerHasFuel: !fromT.outOfFuel && (attPlayer?.resources?.oil ?? 0) > 0,
+      isFirstRoundOnTarget: !assaultedSet.has(toT.id),
+      defenderTerritoryCount: defTerrCount,
+      fortificationLevel: getTerritoryBuildingLevel(toT, "fortification"),
+      isDefenderCapital: defPlayer?.capitalTerritoryId === toT.id,
+      hasCasBonus: toT.casBonusAttackerId === attPlayer?.id,
+      coastalBombardment: Boolean(naval && naval.attackerNavy > 0),
+      encircledPenalty: toT.isEncircled ? ((toT.encircledRounds ?? 1) >= 2 ? 2 : 1) : 0,
+    };
+  });
+
   let currentAttackOdds = $derived.by(() => {
     if (!game || !selectedFromId || !selectedToId) return null;
     const fromT = game.territories[selectedFromId];
     const toT = game.territories[selectedToId];
     if (!fromT || !toT) return null;
-    return estimateAttackWinOdds(selectedUnitTotal + 1, toT.armies);
+    return estimateAttackWinOdds(
+      selectedUnitTotal + 1,
+      toT.armies,
+      currentAttackModifiers ?? undefined
+    );
   });
+
+  let currentAttackModifierBadges = $derived.by(() =>
+    describeCombatOddsModifiers(currentAttackModifiers ?? undefined)
+  );
 
   let maxAttackerDice = $derived(Math.max(1, Math.min(3, selectedUnitTotal)));
 
@@ -417,10 +466,10 @@
     }
   });
 
-  // Countdown timer
+  // Countdown timer (freezes while match is paused)
   $effect(() => {
     const timer = setInterval(() => {
-      if (turnDeadline > 0) {
+      if (turnDeadline > 0 && !pauseState?.paused) {
         remainingSeconds = Math.max(0, Math.ceil((turnDeadline - Date.now()) / 1000));
       }
     }, 500);
@@ -432,6 +481,7 @@
   $effect(() => {
     if (
       isMyTurn &&
+      !pauseState?.paused &&
       !game?.winnerId &&
       remainingSeconds <= 5 &&
       remainingSeconds > 0 &&
@@ -525,6 +575,8 @@
     competitionMode: CompetitionMode;
     matchOrigin: MatchOrigin;
     selectedScenarioId?: TacticalScenarioId;
+    customRules?: CustomRulesConfig;
+    pauseState?: PauseStateView | null;
   }
 
   function clearPersistedRoom() {
@@ -560,6 +612,8 @@
     showHudManager = false;
     competitionMode = "custom";
     matchOrigin = "lobby";
+    customRules = { ...DEFAULT_CUSTOM_RULES };
+    pauseState = null;
   }
 
   function stopMatchmakingPolling() {
@@ -777,6 +831,10 @@
         if (payload.selectedScenarioId) {
           selectedScenarioId = payload.selectedScenarioId;
         }
+        if (payload.customRules) {
+          customRules = payload.customRules;
+        }
+        pauseState = payload.pauseState ?? null;
         communications.setMyPlayerId(payload.myPlayerId);
         communications.setPlayers(payload.lobbyPlayers);
         game = payload.game;
@@ -1328,6 +1386,8 @@
       {competitionMode}
       {matchOrigin}
       {selectedScenarioId}
+      {customRules}
+      onUpdateCustomRules={(next) => connectedRoom?.send("update_rules_config", next)}
       onQueue={queueForMatch}
       onCancelQueue={cancelMatchmakingQueue}
       onConnectMatch={connectToMatchedRoom}
@@ -1415,6 +1475,9 @@
         {currentTurnPlayer}
         {remainingSeconds}
         {playerMetrics}
+        {amIHost}
+        {pauseState}
+        onTogglePause={() => connectedRoom?.send("toggle_pause")}
         {isImmersiveMode}
         {hudVisibility}
         onFocusTerritory={focusTerritory}
@@ -1470,6 +1533,7 @@
         bind:selectedAttackDice
         {maxAttackerDice}
         {currentAttackOdds}
+        attackOddsBadges={currentAttackModifierBadges}
         {selectedUnitTotal}
         {territoryById}
         {isImmersiveMode}

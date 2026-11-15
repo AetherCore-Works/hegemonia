@@ -18,12 +18,15 @@
     calculateTurnEconomy,
     DEFAULT_MARKET_CONFIG,
     findValidTradeTriplet,
+    getPartisanRelocationStatus,
     getTradeBonusArmies,
     playerHasMarket,
+    previewMarketTrade,
   } from "@hegemonia/engine";
   import {
     getMilitaryRank,
     type GameState,
+    type PauseStateView,
     type PlayerColor,
     type PlayerState,
     type ResourceType,
@@ -104,6 +107,9 @@
     onFocusTerritory?: (territoryId: string) => void;
     autoCameraFocus?: boolean;
     onToggleAutoCameraFocus?: (val: boolean) => void;
+    amIHost?: boolean;
+    pauseState?: PauseStateView | null;
+    onTogglePause?: () => void;
   }
 
   let {
@@ -135,6 +141,9 @@
     onFocusTerritory,
     autoCameraFocus = true,
     onToggleAutoCameraFocus,
+    amIHost = false,
+    pauseState = null,
+    onTogglePause,
   }: Props = $props();
 
   let activeDiplomacyTargetId = $state<string | null>(null);
@@ -143,6 +152,28 @@
   let marketBatchQty = $state(1);
   let showExitConfirmModal = $state(false);
   let botTakeoverMode = $state<"after_2_turns" | "immediate">("after_2_turns");
+  let pauseCountdownSec = $state(0);
+
+  let isClassicMode = $derived(Boolean(game.rulesConfig?.classicMode));
+  let partisanStatus = $derived(
+    myPlayerId ? getPartisanRelocationStatus(game, myPlayerId, CLASSIC_MAP) : null
+  );
+
+  $effect(() => {
+    if (!pauseState?.paused || !pauseState.resumeDeadline) {
+      pauseCountdownSec = 0;
+      return;
+    }
+    const update = () => {
+      pauseCountdownSec = Math.max(
+        0,
+        Math.ceil(((pauseState?.resumeDeadline ?? 0) - Date.now()) / 1000)
+      );
+    };
+    update();
+    const id = setInterval(update, 500);
+    return () => clearInterval(id);
+  });
 
   // HEGEM-62: Backward compatibility bridge for callers using legacy mapMode
   $effect(() => {
@@ -290,28 +321,22 @@
     }
   }
 
+  function getBuyQuote(resource: ResourceType, qty: number) {
+    if (!game?.marketPrices) return null;
+    return previewMarketTrade(game.marketPrices, resource, "buy", qty);
+  }
+
+  function getSellQuote(resource: ResourceType, qty: number) {
+    if (!game?.marketPrices) return null;
+    return previewMarketTrade(game.marketPrices, resource, "sell", qty);
+  }
+
   function getEstBuyCost(resource: ResourceType, qty: number): number {
-    if (!game?.marketPrices) return 0;
-    const cfg = DEFAULT_MARKET_CONFIG[resource];
-    let cost = 0;
-    let p = game.marketPrices[resource].buyPrice;
-    for (let i = 0; i < qty; i++) {
-      cost += p;
-      p = Math.min(cfg.maxBuy, p + cfg.step);
-    }
-    return cost;
+    return getBuyQuote(resource, qty)?.totalMoney ?? 0;
   }
 
   function getEstSellRevenue(resource: ResourceType, qty: number): number {
-    if (!game?.marketPrices) return 0;
-    const cfg = DEFAULT_MARKET_CONFIG[resource];
-    let rev = 0;
-    let p = game.marketPrices[resource].sellPrice;
-    for (let i = 0; i < qty; i++) {
-      rev += p;
-      p = Math.max(cfg.minSell, p - cfg.step);
-    }
-    return rev;
+    return getSellQuote(resource, qty)?.totalMoney ?? 0;
   }
 
   function handleMarketTrade(
@@ -1156,6 +1181,7 @@
         </div>
         <div
           class="tc-timer"
+          class:timer-paused={pauseState?.paused}
           class:timer-warning={remainingSeconds <= 20 && remainingSeconds > 10}
           class:timer-danger={remainingSeconds <= 20 && remainingSeconds > 10}
           class:timer-critical={remainingSeconds <= 10}
@@ -1165,9 +1191,53 @@
           aria-label={`Tempo restante de turno: ${remainingSeconds} segundos`}
         >
           <Icon name="clock" size={14} />
-          <span>{remainingSeconds}s</span>
+          <span>{pauseState?.paused ? "PAUSADO" : `${remainingSeconds}s`}</span>
         </div>
+        {#if amIHost && onTogglePause && !game.winnerId}
+          <button
+            type="button"
+            class="tc-pause-btn"
+            class:paused={pauseState?.paused}
+            onclick={onTogglePause}
+            title={pauseState?.paused ? "Retomar partida" : "Pausar cronômetro da partida"}
+          >
+            {pauseState?.paused ? "Retomar" : "Pausar"}
+          </button>
+        {/if}
       </div>
+    {/if}
+
+    {#if pauseState?.paused}
+      <div class="pause-status-banner" role="status">
+        <strong>
+          {pauseState.reason === "disconnect"
+            ? `AUTO-PAUSE DE RECONEXÃO (${pauseState.pausedPlayerName ?? "Comandante"})`
+            : `PAUSA TÁTICA (${pauseState.pausedPlayerName ?? "Anfitrião"})`}
+        </strong>
+        {#if pauseCountdownSec > 0}
+          <span class="pause-countdown">{pauseCountdownSec}s</span>
+        {/if}
+      </div>
+    {/if}
+
+    {#if partisanStatus?.isPartisan && !isClassicMode}
+      <button
+        type="button"
+        class="partisan-status-pill"
+        class:urgent={partisanStatus.isDueNow}
+        onclick={() => {
+          const targetId = partisanStatus?.eligibleTerritoryIds[0] ?? myPlayerState?.capitalTerritoryId;
+          if (targetId) onFocusTerritory?.(targetId);
+        }}
+        title="Clique para centralizar em um território elegível para a Base Nômade Partisan"
+      >
+        <Icon name="capital" size={12} />
+        {#if partisanStatus.isDueNow}
+          <span>BASE PARTISAN: RELOCAÇÃO OBRIGATÓRIA NESTE TURNO (CLIQUE)</span>
+        {:else}
+          <span>Base Nômade Partisan: {partisanStatus.roundsRemaining} turno(s) restante(s)</span>
+        {/if}
+      </button>
     {/if}
 
     <TacticalAlerts
@@ -1278,17 +1348,19 @@
           {/if}
         </button>
 
-        <button
-          class="hud-btn hq-deck-btn"
-          data-testid="btn-open-market"
-          class:highlight={Boolean(myHasMarket)}
-          class:active={activeRightDrawer === "market"}
-          onclick={() => toggleRightDrawer("market")}
-          title={t("market_btn_open")}
-        >
-          <span class="hq-btn-icon"><Icon name="market" size={14} /></span>
-          <span class="hq-btn-label">{t("market_btn_open")}</span>
-        </button>
+        {#if !isClassicMode}
+          <button
+            class="hud-btn hq-deck-btn"
+            data-testid="btn-open-market"
+            class:highlight={Boolean(myHasMarket)}
+            class:active={activeRightDrawer === "market"}
+            onclick={() => toggleRightDrawer("market")}
+            title={t("market_btn_open")}
+          >
+            <span class="hq-btn-icon"><Icon name="market" size={14} /></span>
+            <span class="hq-btn-label">{t("market_btn_open")}</span>
+          </button>
+        {/if}
       </div>
 
       <div class="hq-secondary-row">
@@ -1326,7 +1398,7 @@
       </div>
     </div>
 
-    {#if myPlayerState}
+    {#if myPlayerState && !isClassicMode}
       {@const res = myPlayerState.resources ?? {
         money: 0,
         steel: 0,
@@ -1996,7 +2068,8 @@
           </button>
         {/if}
 
-        {#if isMyTurn && game.phase === "deploy" && myPlayerState.cards.length < 5}
+        {#if !isClassicMode && isMyTurn && game.phase === "deploy" && myPlayerState.cards.length < 5}
+          {@const goldCardCost = game.rulesConfig?.supplyCardGoldCost ?? 4}
           {@const res = myPlayerState.resources ?? {
             money: 0,
             steel: 0,
@@ -2004,11 +2077,11 @@
             gold: 0,
           }}
           {@const canBuyWithGold =
-            !myPlayerState.boughtCardWithGoldThisTurn && res.gold >= 4}
+            !myPlayerState.boughtCardWithGoldThisTurn && res.gold >= goldCardCost}
           <div class="gold-card-purchase-box">
             <div class="gold-card-purchase-head">
               <Icon name="gold" size={13} />
-              <span>{t("cards_buy_gold_title")}</span>
+              <span>{t("cards_buy_gold_title")} ({goldCardCost} Ouro)</span>
             </div>
             <p class="gold-card-purchase-sub">{t("cards_buy_gold_sub")}</p>
             {#if myPlayerState.boughtCardWithGoldThisTurn}
@@ -2100,8 +2173,10 @@
           <div class="market-commodities-grid">
             {#each ["steel", "oil", "gold"] as const as res}
               {@const stock = myPlayerState.resources[res] ?? 0}
-              {@const buyCost = getEstBuyCost(res, marketBatchQty)}
-              {@const sellRev = getEstSellRevenue(res, marketBatchQty)}
+              {@const buyQuote = getBuyQuote(res, marketBatchQty)}
+              {@const sellQuote = getSellQuote(res, marketBatchQty)}
+              {@const buyCost = buyQuote?.totalMoney ?? 0}
+              {@const sellRev = sellQuote?.totalMoney ?? 0}
               {@const currentPrice = game.marketPrices[res]}
               {@const lacksFunds = treasuryMoney < buyCost}
               {@const lacksStock = stock < marketBatchQty}
@@ -2161,6 +2236,11 @@
                     {marketBatchQty}x (+${sellRev})
                   </button>
                 </div>
+                {#if marketBatchQty > 1 && buyQuote && sellQuote}
+                  <div class="market-quote-preview">
+                    <span>Após {marketBatchQty}x: Compra ${buyQuote.nextBuyPrice} • Venda ${sellQuote.nextSellPrice}</span>
+                  </div>
+                {/if}
               </div>
             {/each}
           </div>
@@ -5326,5 +5406,76 @@
     .tc-directive {
       font-size: 0.66rem;
     }
+  }
+
+  .tc-pause-btn {
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 0.65rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    border: 1px solid rgba(250, 204, 21, 0.45);
+    background: rgba(15, 23, 42, 0.9);
+    color: #fde047;
+    cursor: pointer;
+  }
+  .tc-pause-btn.paused {
+    border-color: #10b981;
+    color: #6ee7b7;
+  }
+  .tc-timer.timer-paused {
+    border-color: #eab308 !important;
+    color: #fef08a !important;
+    animation: none !important;
+  }
+  .pause-status-banner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 5px;
+    padding: 4px 10px;
+    border-radius: 5px;
+    background: rgba(234, 179, 8, 0.16);
+    border: 1px solid rgba(234, 179, 8, 0.55);
+    color: #fef08a;
+    font-size: 0.68rem;
+  }
+  .pause-countdown {
+    font-family: var(--font-mono);
+    font-weight: 800;
+    color: #ffffff;
+  }
+  .partisan-status-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    margin-top: 5px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    background: rgba(15, 23, 42, 0.85);
+    color: #cbd5e1;
+    font-size: 0.64rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .partisan-status-pill.urgent {
+    border-color: #f59e0b;
+    background: rgba(245, 158, 11, 0.2);
+    color: #fef08a;
+    animation: partisan-pill-glow 1.3s ease-in-out infinite alternate;
+  }
+  @keyframes partisan-pill-glow {
+    from { box-shadow: 0 0 4px rgba(245, 158, 11, 0.35); }
+    to { box-shadow: 0 0 12px rgba(245, 158, 11, 0.8); }
+  }
+  .market-quote-preview {
+    margin-top: 4px;
+    font-size: 0.63rem;
+    color: #94a3b8;
+    text-align: center;
   }
 </style>

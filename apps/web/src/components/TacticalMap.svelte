@@ -23,8 +23,9 @@
   } from "@hegemonia/maps";
   import {
     hasTerritoryBuilding,
+    getPartisanRelocationStatus,
+    getReachableManeuverDistances,
     getTerritoryBuildingLevel,
-    getReachableManeuverTargets,
   } from "@hegemonia/engine";
   import Icon from "./Icon.svelte";
   import { t } from "../i18n/index.svelte";
@@ -368,9 +369,29 @@
     new Set(combatAnimations.map((a) => a.toTerritoryId))
   );
 
-  const reachableManeuverTargets = $derived(
+  const maneuverReach = $derived(
     game.phase === "maneuver" && selectedFromId && myPlayerId
-      ? getReachableManeuverTargets(game, selectedFromId, myPlayerId)
+      ? getReachableManeuverDistances(game, selectedFromId, myPlayerId, CLASSIC_MAP)
+      : { landDistances: {} as Record<string, number>, airfieldTargets: [] as string[], aircraftTargets: [] as string[], maxLandDistance: 0 }
+  );
+
+  const reachableManeuverTargets = $derived(
+    new Set<string>([
+      ...Object.keys(maneuverReach.landDistances),
+      ...maneuverReach.airfieldTargets,
+      ...maneuverReach.aircraftTargets,
+    ])
+  );
+
+  const partisanRelocStatus = $derived(
+    myPlayerId ? getPartisanRelocationStatus(game, myPlayerId, CLASSIC_MAP) : null
+  );
+
+  const partisanEligibleIds = $derived(
+    game.phase === "deploy" &&
+    partisanRelocStatus?.isPartisan &&
+    partisanRelocStatus.isDueNow
+      ? new Set(partisanRelocStatus.eligibleTerritoryIds)
       : new Set<string>()
   );
 
@@ -682,6 +703,23 @@
                 Boolean(selectedFromId) &&
                 t.id !== selectedFromId &&
                 reachableManeuverTargets.has(t.id)}
+              {@const maneuverDist = isManeuverDest ? (maneuverReach.landDistances[t.id] ?? null) : null}
+              {@const isAirfieldManeuverTarget =
+                isManeuverDest &&
+                maneuverDist === null &&
+                (maneuverReach.airfieldTargets.includes(t.id) ||
+                  maneuverReach.aircraftTargets.includes(t.id))}
+              {@const isPartisanRelocTarget = partisanEligibleIds.has(t.id)}
+              {@const maneuverStrokeColor =
+                maneuverDist === 1
+                  ? "#38bdf8"
+                  : maneuverDist === 2
+                    ? "#fbbf24"
+                    : maneuverDist === 3
+                      ? "#2dd4bf"
+                      : isAirfieldManeuverTarget
+                        ? "#c084fc"
+                        : "#38bdf8"}
               {@const isEligibleManeuverOrigin =
                 game.phase === "maneuver" &&
                 !selectedFromId &&
@@ -716,6 +754,7 @@
                 <!-- Base Political Fill + Frontier Border -->
                 <path
                   class:maneuver-dest-pulse={isManeuverDest}
+                  class:partisan-reloc-pulse={isPartisanRelocTarget && !isSelected}
                   d={t.svgPath}
                   fill={isObjOwned ? "#059669" : isObjPending ? "#dc2626" : activeFill}
                   fill-opacity={isObjTarget
@@ -729,35 +768,39 @@
                           : "0.88"}
                   stroke={isSelected
                     ? "#ffffff"
-                    : isManeuverDest
-                      ? "#38bdf8"
-                      : isEligibleManeuverOrigin
-                        ? "#38bdf8"
-                        : isValidTarget
-                          ? "#facc15"
-                          : isObjPending
-                            ? "#ef4444"
-                            : isObjOwned
-                              ? "#10b981"
-                              : effectiveBaseMode === "cartographic"
-                                ? ownerColor
-                                : isBlackTerritory
-                                  ? "#CBD5E1"
-                                  : "rgba(9, 13, 22, 0.95)"}
+                    : isPartisanRelocTarget
+                      ? "#f59e0b"
+                      : isManeuverDest
+                        ? maneuverStrokeColor
+                        : isEligibleManeuverOrigin
+                          ? "#38bdf8"
+                          : isValidTarget
+                            ? "#facc15"
+                            : isObjPending
+                              ? "#ef4444"
+                              : isObjOwned
+                                ? "#10b981"
+                                : effectiveBaseMode === "cartographic"
+                                  ? ownerColor
+                                  : isBlackTerritory
+                                    ? "#CBD5E1"
+                                    : "rgba(9, 13, 22, 0.95)"}
                   stroke-width={isSelected
                     ? "2.6"
-                    : isManeuverDest
+                    : isPartisanRelocTarget
                       ? "2.8"
-                      : isEligibleManeuverOrigin
-                        ? "2.0"
-                        : isValidTarget || isObjPending
-                          ? "2.4"
-                          : isObjOwned
-                            ? "2.0"
-                            : effectiveBaseMode === "cartographic"
-                              ? "1.6"
-                              : "1.25"}
-                  stroke-dasharray={isEligibleManeuverOrigin ? "4,3" : "none"}
+                      : isManeuverDest
+                        ? "2.8"
+                        : isEligibleManeuverOrigin
+                          ? "2.0"
+                          : isValidTarget || isObjPending
+                            ? "2.4"
+                            : isObjOwned
+                              ? "2.0"
+                              : effectiveBaseMode === "cartographic"
+                                ? "1.6"
+                                : "1.25"}
+                  stroke-dasharray={isAirfieldManeuverTarget ? "5,3" : isEligibleManeuverOrigin ? "4,3" : "none"}
                   stroke-linejoin="round"
                   filter={isSelected || isValidTarget
                     ? "url(#glow-gold)"
@@ -2212,5 +2255,21 @@
   /* --- HEGEM-102: HOI4-Style Smooth Auto-Zoom & Camera Pan Rig --- */
   .camera-rig.smooth-transition {
     transition: transform 450ms cubic-bezier(0.2, 0.8, 0.25, 1);
+  }
+  .partisan-reloc-pulse {
+    animation: pulse-partisan-amber 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse-partisan-amber {
+    0%, 100% {
+      stroke: #f59e0b;
+      stroke-width: 2.5;
+      stroke-opacity: 0.78;
+    }
+    50% {
+      stroke: #fde047;
+      stroke-width: 3.6;
+      stroke-opacity: 1;
+      filter: drop-shadow(0 0 6px rgba(245, 158, 11, 0.95));
+    }
   }
 </style>

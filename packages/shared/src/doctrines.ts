@@ -190,10 +190,12 @@ export const DOCTRINE_LIST: DoctrineDef[] = CORE_DOCTRINE_LIST;
 
 export function isDoctrineAvailableInLobby(
   doctrineId: DoctrineId,
-  selectedDoctrines: (DoctrineId | undefined | null)[]
+  selectedDoctrines: (DoctrineId | undefined | null)[],
+  doctrineLimitEnabled = true
 ): boolean {
   const def = DOCTRINES[doctrineId];
   if (!def) return false;
+  if (!doctrineLimitEnabled) return true;
   // Account for aliases
   const normalizedSelected = selectedDoctrines.map((d) => {
     if (d === "defense_in_depth") return "tall_sovereign";

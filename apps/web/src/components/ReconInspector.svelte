@@ -366,7 +366,15 @@
             </div>
           </section>
 
-          <!-- 5. TERRITORIAL INFRASTRUCTURE & MILITARY ENGINEERING (HEGEM-32 & HEGEM-107) -->
+          <!-- 5. TERRITORIAL INFRASTRUCTURE & MILITARY ENGINEERING (Hidden in Classic Mode) -->
+          {#if game.rulesConfig?.classicMode}
+            <section class="recon-section">
+              <div class="classic-recon-banner">
+                <strong>Modo Clássico (War/Risk Puro)</strong>
+                <small>Construções, recursos e unidades especiais estão desativados nesta partida.</small>
+              </div>
+            </section>
+          {:else}
           <section class="recon-section">
             <div class="section-header-bar recon-infra-header">
               <span class="infra-title">
@@ -873,6 +881,7 @@
                 {/each}
               </div>
             </section>
+          {/if}
           {/if}
         </div>
       </div>
@@ -1841,5 +1850,20 @@
     color: #94a3b8;
     font-size: 0.65rem;
     pointer-events: auto;
+  }
+  .classic-recon-banner {
+    padding: 10px 12px;
+    border-radius: 6px;
+    background: rgba(234, 179, 8, 0.08);
+    border: 1px solid rgba(234, 179, 8, 0.32);
+    color: #fde047;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 0.75rem;
+  }
+  .classic-recon-banner small {
+    color: #cbd5e1;
+    font-size: 0.68rem;
   }
 </style>
