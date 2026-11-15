@@ -9,13 +9,19 @@
     availableObjectives: ObjectiveCard[];
     doctrineId?: DoctrineId | null;
     onSelect: (objectiveId: string) => void;
+    onPreviewObjective?: (objective: ObjectiveCard | null) => void;
   }
 
-  let { availableObjectives, doctrineId, onSelect }: Props = $props();
+  let { availableObjectives, doctrineId, onSelect, onPreviewObjective }: Props = $props();
 
   let chosenId = $state<string | null>(null);
   let collapsed = $state<boolean>(true);
   let selectedObjectiveId = $derived(chosenId ?? availableObjectives[0]?.id ?? null);
+
+  function selectCard(obj: ObjectiveCard) {
+    chosenId = obj.id;
+    onPreviewObjective?.(obj);
+  }
 
   function hasDoctrineAffinity(obj: ObjectiveCard, docId?: DoctrineId | null): boolean {
     if (!docId) return false;
@@ -26,6 +32,7 @@
 
   function confirmSelection() {
     if (selectedObjectiveId) {
+      onPreviewObjective?.(null);
       onSelect(selectedObjectiveId);
     }
   }
@@ -102,7 +109,7 @@
             class="objective-card-option"
             class:selected={isSelected}
             class:affinity-card={isAffinity}
-            onclick={() => (chosenId = obj.id)}
+            onclick={() => selectCard(obj)}
           >
             <div class="obj-card-top">
               <span class="obj-type-badge">

@@ -776,7 +776,7 @@
           </aside>
         </div>
 
-        {#if competitionMode === "custom"}
+        {#if competitionMode === "custom" && amIHost}
           <!-- PRESETS & SANDBOX DE REGRAS (HEGEM-67 & HEGEM-110) -->
           <div class="rules-sandbox-panel full-width">
             <div class="section-subhead">

@@ -390,6 +390,14 @@ export interface PlayerState {
   bastionRoundsHeld?: number;
   /** Number of consecutive rounds a player has held their Sovereign Wonder (MARAVILHA) */
   wonderRoundsHeld?: number;
+  /** Lifecycle status of the Doomsday Citadel (Wonder): constructing or 6-turn countdown (HEGEM-161) */
+  wonderStatus?: "constructing" | "countdown";
+  /** Remaining construction rounds before the Doomsday Citadel activates (HEGEM-161) */
+  wonderConstructionLeft?: number;
+  /** Remaining countdown rounds (6 -> 0) after the Doomsday Citadel is completed (HEGEM-161) */
+  wonderCountdownLeft?: number;
+  /** Territory ID where the player's Wonder is located */
+  wonderTerritoryId?: string;
   /** National treasury ($) and strategic resource stockpiles (steel, oil, gold) */
   resources: PlayerResources;
   /** Whether this player has already purchased a supply card with gold on the current turn */
@@ -635,6 +643,30 @@ export function normalizeCustomRules(
   return { ...DEFAULT_CUSTOM_RULES };
 }
 
+export type DramaticEventKind =
+  | "player_eliminated"
+  | "extermination_first_kill"
+  | "wonder_started"
+  | "wonder_completed"
+  | "wonder_destroyed"
+  | "naval_blockade";
+
+export interface DramaticEvent {
+  id: string;
+  kind: DramaticEventKind;
+  round: number;
+  tone: "crimson" | "gold" | "cyan" | "amber";
+  titlePt: string;
+  titleEn: string;
+  subtitlePt: string;
+  subtitleEn: string;
+  bodyPt: string;
+  bodyEn: string;
+  actorPlayerId?: string;
+  targetPlayerId?: string;
+  territoryId?: string;
+}
+
 export interface GameState {
   id: string;
   round: number;
@@ -668,6 +700,10 @@ export interface GameState {
   rulesConfig?: CustomRulesConfig;
   /** Per-round summary snapshots for post-game After-Action Report (HEGEM-151) */
   roundHistory?: RoundSnapshot[];
+  /** Global floating HOI4/EU4-style critical event queue (HEGEM-160) */
+  dramaticEvents?: DramaticEvent[];
+  /** Whether Extermination's first player elimination event has already fired */
+  exterminationFirstKillAnnounced?: boolean;
 }
 
 export interface LobbyPlayerView {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CLASSIC_MAP } from "@hegemonia/maps";
+import { CLASSIC_MAP, V06_ASYMMETRIC_OBJECTIVES } from "@hegemonia/maps";
 import {
   DEFAULT_CUSTOM_RULES,
   RULES_PRESETS,
@@ -212,6 +212,57 @@ describe("Hegemonia v0.6.2 Features", () => {
       expect(quote1.totalMoney).toBe(state.marketPrices.steel.buyPrice);
       expect(quote5.totalMoney).toBeGreaterThan(quote1.totalMoney * 5 - 1);
       expect(quote5.nextBuyPrice).toBeGreaterThanOrEqual(quote1.nextBuyPrice);
+    });
+  });
+
+  describe("v0.6.2 Playtest Fixes (HEGEM-155, 161, 164, 166)", () => {
+    it("prevents attacking/conquering a territory using only aircraft without ground units (HEGEM-155)", () => {
+      const rng = createSeededRng("air-cap");
+      let state = createGame({ id: "air-cap", seed: "air-cap", players, customRules: { classicMode: false } });
+      state.round = 2;
+      state.phase = "attack";
+      state.turnIndex = 0;
+      const activePlayer = state.players[0];
+      activePlayer.unplacedArmies = 0;
+      const p1Terr = Object.values(state.territories).find((t) => t.ownerId === activePlayer.id)!;
+      const def = CLASSIC_MAP.territories.find((t) => t.id === p1Terr.id)!;
+      const enemyId = def.neighbors.find((nid) => state.territories[nid].ownerId !== activePlayer.id)!;
+      p1Terr.units = { infantry: 1, tank: 0, artillery: 0, aircraft: 2, navy: 0 };
+      p1Terr.armies = 3;
+
+      expect(() =>
+        applyAction(
+          state,
+          activePlayer.id,
+          {
+            type: "attack",
+            fromTerritoryId: p1Terr.id,
+            toTerritoryId: enemyId,
+            units: { infantry: 0, tank: 0, artillery: 0, aircraft: 2, navy: 0 },
+          },
+          rng
+        )
+      ).toThrow(/Aeronaves e navios não podem conquistar/i);
+    });
+
+    it("updates objectives for Bretton Woods (+50%), Extermination (20), and Supreme Warmonger (35, 0 kills)", () => {
+      const state = createGame({ id: "obj-upd", seed: "obj-upd", players });
+      const bw = V06_ASYMMETRIC_OBJECTIVES.find((o) => o.id === "obj_bretton_woods")!;
+      expect(bw.rule.type).toBe("economic_hegemony");
+      if (bw.rule.type === "economic_hegemony") {
+        expect(bw.rule.targetMoney).toBe(450);
+        expect(bw.rule.targetGold).toBe(75);
+      }
+      const scourge = V06_ASYMMETRIC_OBJECTIVES.find((o) => o.id === "obj_extermination_capital_scourge")!;
+      if (scourge.rule.type === "eliminate_players") {
+        expect(scourge.rule.minTerritoriesHeld).toBe(20);
+      }
+      const warmonger = V06_ASYMMETRIC_OBJECTIVES.find((o) => o.id === "obj_extermination_warmonger_hegemony")!;
+      if (warmonger.rule.type === "eliminate_players") {
+        expect(warmonger.rule.minEliminations).toBe(0);
+        expect(warmonger.rule.minTerritoriesHeld).toBe(35);
+      }
+      void state;
     });
   });
 });

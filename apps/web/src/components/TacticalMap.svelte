@@ -22,6 +22,7 @@
     GRATICULE_SVG_PATH,
   } from "@hegemonia/maps";
   import {
+    checkNavalBlockade,
     hasTerritoryBuilding,
     getPartisanRelocationStatus,
     getReachableManeuverDistances,
@@ -651,14 +652,23 @@
           {#each DIRECT_SEA_LINKS as [a, b]}
             {@const ta = territoryById.get(a)!}
             {@const tb = territoryById.get(b)!}
+            {@const seaBlockaded = Boolean(
+              myPlayerId &&
+                (checkNavalBlockade(game, a, b, myPlayerId).isBlockaded ||
+                  checkNavalBlockade(game, b, a, myPlayerId).isBlockaded)
+            )}
             <line
               x1={ta.center[0]}
               y1={ta.center[1]}
               x2={tb.center[0]}
               y2={tb.center[1]}
-              stroke={effectiveBaseMode === "cartographic" ? "rgba(224, 242, 254, 0.65)" : "#64748b"}
-              stroke-dasharray="3.5,4"
-              stroke-width="1.35"
+              stroke={seaBlockaded
+                ? "#ef4444"
+                : effectiveBaseMode === "cartographic"
+                  ? "rgba(224, 242, 254, 0.65)"
+                  : "#64748b"}
+              stroke-dasharray={seaBlockaded ? "4,2.5" : "3.5,4"}
+              stroke-width={seaBlockaded ? "2.1" : "1.35"}
               pointer-events="none"
             />
           {/each}
@@ -1157,6 +1167,56 @@
                     <g transform="translate(13.5, 4.5)" pointer-events="none">
                       <circle cx="0" cy="0" r="3.8" fill="#422006" stroke="#eab308" stroke-width="1.1" />
                       <Icon name="blitzkrieg" size={5.2} x={-2.6} y={-2.6} color="#fef08a" strokeWidth={2.2} />
+                    </g>
+                  {/if}
+
+                  <!-- Air / Navy Stationed Indicator (Extra #1) -->
+                  {#if (tState.units?.aircraft ?? 0) > 0 || (tState.units?.navy ?? 0) > 0}
+                    <g transform="translate(13.5, -4.5)" pointer-events="none">
+                      <circle
+                        cx="0"
+                        cy="0"
+                        r="4.0"
+                        fill="#0f172a"
+                        stroke={(tState.units?.aircraft ?? 0) > 0 ? "#38bdf8" : "#22d3ee"}
+                        stroke-width="1.05"
+                      />
+                      <Icon
+                        name={(tState.units?.aircraft ?? 0) > 0 ? "aircraft" : "navy"}
+                        size={5.2}
+                        x={-2.6}
+                        y={-2.6}
+                        color="#7dd3fc"
+                        strokeWidth={2}
+                      />
+                    </g>
+                  {/if}
+
+                  <!-- Doomsday Citadel (Wonder) Pulsing Map Badge (HEGEM-161 / Extra #3) -->
+                  {#if hasTerritoryBuilding(tState, "wonder")}
+                    {@const wonderLabel =
+                      owner?.wonderStatus === "countdown"
+                        ? `FIM ${owner.wonderCountdownLeft ?? 6}t`
+                        : `OBRA ${owner?.wonderConstructionLeft ?? 2}t`}
+                    <g transform="translate(0, -16.8)" pointer-events="none">
+                      <rect
+                        x="-16"
+                        y="-4.6"
+                        width="32"
+                        height="9.2"
+                        rx="3"
+                        fill="#451a03"
+                        stroke="#facc15"
+                        stroke-width="1.2"
+                      />
+                      <text
+                        x="0"
+                        y="2.1"
+                        text-anchor="middle"
+                        fill="#fef08a"
+                        font-size="5.4"
+                        font-weight="800"
+                      >{wonderLabel}</text>
                     </g>
                   {/if}
 

@@ -18,7 +18,7 @@ ENV GIT_COMMIT_HASH=$GIT_COMMIT_HASH
 
 COPY . .
 RUN pnpm test
-RUN pnpm build
+RUN NODE_ENV=production pnpm build
 
 # Production runtime stage
 FROM node:24-bookworm-slim

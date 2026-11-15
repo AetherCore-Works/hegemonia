@@ -323,6 +323,27 @@ function bumpWorldTension(state: GameState, delta: number): void {
   );
 }
 
+export function pushDramaticEvent(
+  state: GameState,
+  event: Omit<NonNullable<GameState["dramaticEvents"]>[number], "id">
+): void {
+  state.dramaticEvents = state.dramaticEvents ?? [];
+  const id = `evt_${state.round}_${state.dramaticEvents.length + 1}_${event.kind}`;
+  state.dramaticEvents.push({ ...event, id });
+  if (state.dramaticEvents.length > 24) {
+    state.dramaticEvents = state.dramaticEvents.slice(-24);
+  }
+}
+
+export function getWonderCost(state: GameState, playerId: string): { money: number; steel: number } {
+  const ownedCount = Object.values(state.territories).filter((t) => t.ownerId === playerId).length;
+  const bldgMult = state.rulesConfig?.buildingCostMultiplier ?? 1;
+  const rawMoney = 16 + Math.round(ownedCount * 2.5);
+  const money = Math.max(20, Math.round(rawMoney * bldgMult));
+  const steel = Math.max(6, 4 + Math.floor(ownedCount * 0.6));
+  return { money, steel };
+}
+
 export interface PartisanRelocationStatus {
   isPartisan: boolean;
   capitalSet: boolean;
@@ -1388,12 +1409,9 @@ export function checkPlayerVictory(
   }
 
   if (rule.type === "fortified_bastion") {
-    const fortifiedCount = ownedTerritories.filter((t) =>
-      (t.buildings ?? []).some((b) => b.type === "fortification")
-    ).length;
     return (
-      fortifiedCount >= rule.bastionTerritoryCount &&
-      (player.bastionRoundsHeld ?? 0) >= rule.roundsRequired
+      player.wonderStatus === "countdown" &&
+      (player.wonderCountdownLeft ?? 6) <= 0
     );
   }
 
@@ -1602,24 +1620,25 @@ export function calculateObjectiveProgress(
   }
 
   if (rule.type === "fortified_bastion") {
-    const fortifiedCount = ownedTerritories.filter((t) =>
-      (t.buildings ?? []).some((b) => b.type === "fortification")
-    ).length;
-    const fortProgress = Math.min(100, Math.round((fortifiedCount / rule.bastionTerritoryCount) * 100));
-    const roundProgress = Math.min(100, Math.round(((player.bastionRoundsHeld ?? 0) / rule.roundsRequired) * 100));
-    const completionPct = Math.round(fortProgress * 0.5 + roundProgress * 0.5);
+    const hasWonder = ownedTerritories.some((t) => hasTerritoryBuilding(t, "wonder"));
+    const isCountdown = player.wonderStatus === "countdown";
+    const countdownLeft = player.wonderCountdownLeft ?? 6;
+    const heldCountdown = isCountdown ? Math.max(0, 6 - countdownLeft) : 0;
+    const phasePct = hasWonder ? (isCountdown ? 50 : 25) : 0;
+    const countdownPct = isCountdown ? Math.round((heldCountdown / 6) * 50) : 0;
+    const completionPct = Math.min(100, phasePct + countdownPct);
     const metrics: ObjectiveMetric[] = [
       {
-        label: "Territórios Fortificados",
-        current: fortifiedCount,
-        target: rule.bastionTerritoryCount,
-        pct: fortProgress,
+        label: "Cidadela do Dia Final",
+        current: hasWonder ? 1 : 0,
+        target: 1,
+        pct: hasWonder ? 100 : 0,
       },
       {
-        label: "Rodadas Invicto",
-        current: player.bastionRoundsHeld ?? 0,
-        target: rule.roundsRequired,
-        pct: roundProgress,
+        label: "Contagem Regressiva (6t)",
+        current: heldCountdown,
+        target: 6,
+        pct: Math.round((heldCountdown / 6) * 100),
       },
     ];
     return {
@@ -2160,28 +2179,29 @@ export function applyAction(
 
       const baseCost = BUILDING_COSTS[action.buildingType];
       // Epic IX — Frota em Potência: -$1 em Portos e Aeródromos + Multiplicador Sandbox (HEGEM-110)
-      const rawMoneyCost = getEffectiveBuildingMoneyCost(
-        currentPlayer,
-        action.buildingType,
-        baseCost.money
-      );
+      const wonderCost = action.buildingType === "wonder" ? getWonderCost(state, playerId) : null;
+      const rawMoneyCost = wonderCost
+        ? wonderCost.money
+        : getEffectiveBuildingMoneyCost(currentPlayer, action.buildingType, baseCost.money);
       const bldgMult = state.rulesConfig?.buildingCostMultiplier ?? 1;
-      const effectiveMoneyCost =
-        bldgMult === 1 ? rawMoneyCost : Math.max(1, Math.round(rawMoneyCost * bldgMult));
+      const effectiveMoneyCost = wonderCost
+        ? wonderCost.money
+        : (bldgMult === 1 ? rawMoneyCost : Math.max(1, Math.round(rawMoneyCost * bldgMult)));
+      const effectiveSteelCost = wonderCost ? wonderCost.steel : baseCost.steel;
 
       if (
         currentPlayer.resources.money < effectiveMoneyCost ||
-        currentPlayer.resources.steel < baseCost.steel
+        currentPlayer.resources.steel < effectiveSteelCost
       ) {
         const costText =
-          baseCost.steel > 0
-            ? `$${effectiveMoneyCost} e ${baseCost.steel} Aço`
+          effectiveSteelCost > 0
+            ? `$${effectiveMoneyCost} e ${effectiveSteelCost} Aço`
             : `$${effectiveMoneyCost}`;
         throw new Error(`Recursos insuficientes para construir (custo: ${costText}).`);
       }
 
       currentPlayer.resources.money -= effectiveMoneyCost;
-      currentPlayer.resources.steel -= baseCost.steel;
+      currentPlayer.resources.steel -= effectiveSteelCost;
       terr.buildings.push({ type: action.buildingType, level: 1 });
 
       currentPlayer.analytics = currentPlayer.analytics ?? createInitialPlayerAnalytics();
@@ -2202,11 +2222,11 @@ export function applyAction(
         steel_mine: "Mina de Aço",
         oil_well: "Poço Petrolífero",
         refinery: "Refinaria",
-        wonder: "Maravilha Soberana",
+        wonder: "Cidadela do Dia Final (Maravilha)",
       };
       const costSummary =
-        baseCost.steel > 0
-          ? `-$${effectiveMoneyCost}, -${baseCost.steel} Aço`
+        effectiveSteelCost > 0
+          ? `-$${effectiveMoneyCost}, -${effectiveSteelCost} Aço`
           : `-$${effectiveMoneyCost}`;
       state.log.push(
         `🏗️ ${currentPlayer.name} construiu ${buildingNamesPt[action.buildingType]} em ${def.namePt} (${costSummary}).`
@@ -2214,9 +2234,26 @@ export function applyAction(
 
       if (action.buildingType === "wonder") {
         currentPlayer.wonderRoundsHeld = 0;
+        currentPlayer.wonderStatus = "constructing";
+        currentPlayer.wonderConstructionLeft = 2;
+        currentPlayer.wonderCountdownLeft = undefined;
+        currentPlayer.wonderTerritoryId = terr.id;
         state.log.push(
-          `🌟 ALERTA GLOBAL — MARAVILHA DO BASTIÃO: ${currentPlayer.name} iniciou a construção da MARAVILHA SOBERANA em ${def.namePt}! As nações mundiais têm 3 rodadas para romper suas defesas antes da vitória absoluta!`
+          `🏛️ OBRA DO DIA FINAL: ${currentPlayer.name} iniciou a construção da Cidadela do Dia Final em ${def.namePt}! (+1 dado de defesa durante a obra; após concluída, contagem de 6 rodadas!)`
         );
+        pushDramaticEvent(state, {
+          kind: "wonder_started",
+          round: state.round,
+          tone: "gold",
+          titlePt: "Cidadela do Dia Final Iniciada",
+          titleEn: "Doomsday Citadel Under Construction",
+          subtitlePt: `${currentPlayer.name} iniciou a grande obra em ${def.namePt}`,
+          subtitleEn: `${currentPlayer.name} began construction in ${def.name}`,
+          bodyPt: `Durante a construção, ${def.namePt} recebe +1 no dado de defesa. Quando concluída, iniciará a contagem regressiva de 6 rodadas para o fim da guerra!`,
+          bodyEn: `During construction, ${def.name} gains +1 defense die. Once completed, a 6-round countdown to world victory begins!`,
+          actorPlayerId: playerId,
+          territoryId: terr.id,
+        });
       }
       break;
     }
@@ -2938,6 +2975,13 @@ export function applyAction(
       if (!canSubtractUnits(fromUnits, attackingUnits)) {
         throw new Error("A força-tarefa selecionada excede as unidades disponíveis na origem.");
       }
+      const groundAttackCount =
+        attackingUnits.infantry + attackingUnits.tank + attackingUnits.artillery;
+      if (groundAttackCount < 1) {
+        throw new Error(
+          "Aeronaves e navios não podem conquistar territórios sem infantaria ou força terrestre."
+        );
+      }
 
       // Check infantry assault fatigue vs Blitzkrieg capability (HEGEM-25 & Epic IX)
       const isBlitzSpearheadAdvance = fromTerr.conqueredTurnRound === state.round;
@@ -3146,6 +3190,14 @@ export function applyAction(
           defenderDice[0] += 1;
         }
       }
+      // HEGEM-161: Cidadela do Dia Final em construção concede +1 no dado de defesa
+      if (
+        hasTerritoryBuilding(toTerr, "wonder") &&
+        defenderPlayer?.wonderStatus === "constructing" &&
+        defenderDice.length > 0
+      ) {
+        defenderDice[0] += 1;
+      }
       // Fortaleza Nv. 2: -1 ao maior dado de ataque (neutralizada se atacante tiver 4+ artilharias)
       if (fortLevel >= 2 && attackerDice.length > 0) {
         if (!artillerySiegeBonus) {
@@ -3335,7 +3387,7 @@ export function applyAction(
           defenderPlayer.economicPenaltyMultiplier = 0.5;
           defenderPlayer.moralePenalty = 2;
           bumpWorldTension(state, 2.5);
-          currentPlayer.infamy = Math.min(100, (currentPlayer.infamy ?? 0) + 8);
+          currentPlayer.infamy = Math.min(100, (currentPlayer.infamy ?? 0) + 15);
 
           let stolenCardNotice = "";
           if (defenderPlayer.cards.length > 0) {
@@ -3354,11 +3406,29 @@ export function applyAction(
         }
 
         const remainingAttackers = attackerCombat.remaining;
-        const maxMove = Math.min(
-          totalUnits(remainingAttackers),
-          fromTerr.armies - 1
-        );
-        const occupyingUnits = selectUnits(remainingAttackers, 1);
+        const groundPool: UnitCounts = {
+          ...remainingAttackers,
+          aircraft: 0,
+          navy: 0,
+        };
+        const groundSurvivors = totalUnits(groundPool);
+        if (groundSurvivors < 1) {
+          setTerritoryUnits(toTerr, {
+            infantry: 1,
+            tank: 0,
+            artillery: 0,
+            aircraft: 0,
+            navy: 0,
+          });
+          toTerr.ownerId = defenderId;
+          state.pendingConquest = null;
+          state.log.push(
+            `✈️ ${toName} resistiu: sem infantaria ou força terrestre sobrevivente para ocupar o território (aeronaves não conquistam sozinhas).`
+          );
+          break;
+        }
+        const maxMove = Math.min(groundSurvivors, fromTerr.armies - 1);
+        const occupyingUnits = selectUnits(groundPool, 1);
 
         setTerritoryUnits(fromTerr, subtractUnits(getTerritoryUnits(fromTerr), occupyingUnits));
         setTerritoryUnits(toTerr, occupyingUnits);
@@ -3408,7 +3478,36 @@ export function applyAction(
           defPlayer.eliminated = true;
           defPlayer.eliminatedBy = playerId;
           bumpWorldTension(state, 3.5);
-          currentPlayer.infamy = Math.min(100, (currentPlayer.infamy ?? 0) + 12);
+          currentPlayer.infamy = Math.min(100, (currentPlayer.infamy ?? 0) + 25);
+          pushDramaticEvent(state, {
+            kind: "player_eliminated",
+            round: state.round,
+            tone: "crimson",
+            titlePt: `${defPlayer.name} Foi Eliminado!`,
+            titleEn: `${defPlayer.name} Has Been Eliminated!`,
+            subtitlePt: `Aniquilado pelas forças de ${currentPlayer.name}`,
+            subtitleEn: `Annihilated by ${currentPlayer.name}'s forces`,
+            bodyPt: `${currentPlayer.name} conquistou o último bastião de ${defPlayer.name}, redesenhando o equilíbrio global.`,
+            bodyEn: `${currentPlayer.name} captured the last stronghold of ${defPlayer.name}, reshaping the global balance.`,
+            actorPlayerId: playerId,
+            targetPlayerId: defenderId,
+          });
+          if (currentPlayer.doctrineId === "extermination" && !state.exterminationFirstKillAnnounced) {
+            state.exterminationFirstKillAnnounced = true;
+            pushDramaticEvent(state, {
+              kind: "extermination_first_kill",
+              round: state.round,
+              tone: "crimson",
+              titlePt: "Doutrina de Extermínio: Primeiro Abate",
+              titleEn: "Extermination Doctrine: First Kill",
+              subtitlePt: `${currentPlayer.name} iniciou o expurgo total`,
+              subtitleEn: `${currentPlayer.name} began total annihilation`,
+              bodyPt: `A máquina de guerra de extermínio de ${currentPlayer.name} eliminou sua primeira potência rival (${defPlayer.name}).`,
+              bodyEn: `${currentPlayer.name}'s extermination war machine eliminated its first rival power (${defPlayer.name}).`,
+              actorPlayerId: playerId,
+              targetPlayerId: defenderId,
+            });
+          }
           if (defPlayer.cards.length > 0) {
             currentPlayer.cards.push(...defPlayer.cards);
             state.log.push(
@@ -3650,9 +3749,12 @@ export function applyAction(
         if (blockade.isBlockaded) {
           throw new Error("A rota marítima está bloqueada por frotas inimigas.");
         }
-        // HEGEM-112: Projeção marítima permitida sem porto de destino mediante sobretaxa de petróleo
+        // HEGEM-112 & HEGEM-166: Projeção marítima permitida sem porto de destino mediante sobretaxa de petróleo (Extermínio isento)
         const hasDestPort = hasTerritoryBuilding(toTerr, "port");
-        if (movedUnits.navy > 0 || !hasDestPort) {
+        if (
+          currentPlayer.doctrineId !== "extermination" &&
+          (movedUnits.navy > 0 || !hasDestPort)
+        ) {
           navalFuelSurcharge = 1;
           if ((currentPlayer.resources?.oil ?? 0) < navalFuelSurcharge) {
             throw new Error(
@@ -4333,9 +4435,9 @@ function advanceTurn(state: GameState, rng: SeededRng, map: GameMapDef): void {
               (t) => t.ownerId === p.id
             ).length;
             if (heldCount / totalTerritories >= 0.38) {
-              p.infamy = Math.min(100, (p.infamy ?? 0) + 2);
+              p.infamy = Math.min(100, (p.infamy ?? 0) + 5);
               state.log.push(
-                `⚠️ HEGEMONIA AMEAÇADORA: ${p.name} controla ${heldCount}/${totalTerritories} territórios (${Math.round((heldCount / totalTerritories) * 100)}%) e gera alarme global! (+2% Infâmia)`
+                `⚠️ HEGEMONIA AMEAÇADORA: ${p.name} controla ${heldCount}/${totalTerritories} territórios (${Math.round((heldCount / totalTerritories) * 100)}%) e gera alarme global! (+5% Infâmia)`
               );
             }
           }
@@ -4368,29 +4470,81 @@ function advanceTurn(state: GameState, rng: SeededRng, map: GameMapDef): void {
         }
       }
 
-      // Verificação da MARAVILHA SOBERANA (Objetivo Bastião / Fim do Mundo)
+      // Verificação da CIDADELA DO DIA FINAL (Maravilha - HEGEM-161)
       for (const p of state.players) {
         if (!p.eliminated) {
           const wonderTerr = Object.values(state.territories).find(
             (t) => t.ownerId === p.id && hasTerritoryBuilding(t, "wonder")
           );
           if (wonderTerr) {
-            p.wonderRoundsHeld = (p.wonderRoundsHeld ?? 0) + 1;
             const wDef = map.territories.find((t) => t.id === wonderTerr.id);
             const wName = wDef?.namePt ?? wonderTerr.id;
-            state.log.push(
-              `🌟 ALERTA GLOBAL — MARAVILHA SOBERANA: ${p.name} manteve a Maravilha em ${wName} (${p.wonderRoundsHeld}/3 rodadas)! Ao atingir 3 rodadas, a vitória será imediata!`
-            );
-            if (p.wonderRoundsHeld >= 3) {
-              state.winnerId = p.id;
-              state.phase = "game_over";
-              recordRoundSnapshot(state, state.round);
+            const wNameEn = wDef?.name ?? wonderTerr.id;
+            p.wonderTerritoryId = wonderTerr.id;
+
+            if (p.wonderStatus === "constructing") {
+              p.wonderConstructionLeft = Math.max(0, (p.wonderConstructionLeft ?? 2) - 1);
+              if (p.wonderConstructionLeft === 0) {
+                p.wonderStatus = "countdown";
+                p.wonderCountdownLeft = 6;
+                p.wonderRoundsHeld = 0;
+                state.log.push(
+                  `☢️ PROTOCOLO DIA FINAL ATIVADO: ${p.name} concluiu a Cidadela do Dia Final em ${wName}! O mundo acabará em 6 rodadas se não for capturada!`
+                );
+                pushDramaticEvent(state, {
+                  kind: "wonder_completed",
+                  round: state.round,
+                  tone: "gold",
+                  titlePt: "Protocolo Dia Final Ativado!",
+                  titleEn: "Doomsday Protocol Activated!",
+                  subtitlePt: `${p.name} concluiu a Cidadela em ${wName} — 6 rodadas restantes`,
+                  subtitleEn: `${p.name} completed the Citadel in ${wNameEn} — 6 rounds remaining`,
+                  bodyPt: `A Cidadela do Dia Final está operacional! Todas as potências têm exatamente 6 rodadas para invadir ${wName} antes que o mundo chegue ao fim.`,
+                  bodyEn: `The Doomsday Citadel is operational! All powers have 6 rounds to capture ${wNameEn} before the world ends.`,
+                  actorPlayerId: p.id,
+                  territoryId: wonderTerr.id,
+                });
+              } else {
+                state.log.push(
+                  `🏛️ OBRA EM ANDAMENTO: A Cidadela do Dia Final de ${p.name} em ${wName} será concluída em ${p.wonderConstructionLeft} rodada(s) (+1 dado de defesa).`
+                );
+              }
+            } else {
+              p.wonderStatus = "countdown";
+              p.wonderCountdownLeft = Math.max(0, (p.wonderCountdownLeft ?? 6) - 1);
+              p.wonderRoundsHeld = 6 - p.wonderCountdownLeft;
               state.log.push(
-                `💥 O MUNDO ACABA: A Maravilha Soberana em ${wName} foi concluída! O Bastião triunfou e ${p.name} venceu a campanha mundial!`
+                `⏳ CONTAGEM DO DIA FINAL: ${p.name} mantém a Cidadela em ${wName} — restam ${p.wonderCountdownLeft} rodada(s) para o colapso mundial!`
               );
-              return;
+              if (p.wonderCountdownLeft <= 0) {
+                state.winnerId = p.id;
+                state.phase = "game_over";
+                recordRoundSnapshot(state, state.round);
+                state.log.push(
+                  `💥 O DIA FINAL CHEGOU: A Cidadela em ${wName} completou a contagem regressiva! ${p.name} venceu a campanha mundial!`
+                );
+                return;
+              }
             }
           } else {
+            if (p.wonderStatus) {
+              pushDramaticEvent(state, {
+                kind: "wonder_destroyed",
+                round: state.round,
+                tone: "amber",
+                titlePt: "Cidadela do Dia Final Neutralizada",
+                titleEn: "Doomsday Citadel Neutralized",
+                subtitlePt: `A obra de ${p.name} foi perdida`,
+                subtitleEn: `${p.name}'s Citadel was lost`,
+                bodyPt: `As forças rivais romperam o perímetro e interromperam o Protocolo Dia Final de ${p.name}.`,
+                bodyEn: `Rival forces breached the perimeter and halted ${p.name}'s Doomsday Protocol.`,
+                actorPlayerId: p.id,
+              });
+            }
+            p.wonderStatus = undefined;
+            p.wonderConstructionLeft = undefined;
+            p.wonderCountdownLeft = undefined;
+            p.wonderTerritoryId = undefined;
             p.wonderRoundsHeld = 0;
           }
         }

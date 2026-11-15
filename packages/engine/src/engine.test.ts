@@ -655,7 +655,7 @@ describe("Diplomacy, Treaties, World Tension and Coalitions", () => {
     // Round advanced to 2
     expect(state.round).toBe(2);
     expect(state.worldTension).toBe(1.5);
-    expect(state.players[0].infamy).toBe(2);
+    expect(state.players[0].infamy).toBe(5);
   });
 });
 
@@ -3473,12 +3473,15 @@ describe("HEGEM-96: Manual Deploy Phase Transition (end_deploy)", () => {
       // Set 4 fortified territories
       const ownedTerrs = Object.values(state.territories).filter((t) => t.ownerId === "p1").slice(0, 4);
       for (const t of ownedTerrs) {
-        t.buildings = [{ type: "fortification", level: 1 }];
+        t.buildings = [{ type: "fortification", level: 1 }, { type: "wonder", level: 1 }];
       }
+      const p1Init = state.players.find((p) => p.id === "p1")!;
+      p1Init.wonderStatus = "constructing";
+      p1Init.wonderConstructionLeft = 1;
 
       expect(checkPlayerVictory(state, "p1", CLASSIC_MAP)).toBe(false);
 
-      // Advance turn through all players to advance the round
+      // Advance turn through all players to advance the round -> wonder completes and starts 6-round countdown
       state.turnIndex = state.players.findIndex((p) => p.id === "p1");
       state.phase = "attack";
       state = applyAction(state, "p1", { type: "end_turn" }, rng);
@@ -3487,13 +3490,13 @@ describe("HEGEM-96: Manual Deploy Phase Transition (end_deploy)", () => {
       state.phase = "attack";
       state = applyAction(state, nextPlayer.id, { type: "end_turn" }, rng);
 
-      // Round advanced: bastionRoundsHeld should be 1, and global alert logged
       const updatedP1 = state.players.find((p) => p.id === "p1")!;
-      expect(updatedP1.bastionRoundsHeld).toBe(1);
-      expect(state.log.some((l) => l.includes("ALERTA GLOBAL — BASTIÃO SOBERANO"))).toBe(true);
+      expect(updatedP1.wonderStatus).toBe("countdown");
+      expect(updatedP1.wonderCountdownLeft).toBe(6);
+      expect(state.dramaticEvents?.some((e) => e.kind === "wonder_completed")).toBe(true);
 
-      // Simulate 5 rounds held
-      updatedP1.bastionRoundsHeld = 5;
+      // Simulate countdown reaching 0
+      updatedP1.wonderCountdownLeft = 0;
       expect(checkPlayerVictory(state, "p1", CLASSIC_MAP)).toBe(true);
     });
 

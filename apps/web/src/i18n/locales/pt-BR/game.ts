@@ -9,6 +9,7 @@ export const ptBRGame: TranslationCatalog = {
   phase_maneuver_desc: "Remaneje divisões entre territórios aliados adjacentes.",
   phase_pending_conquest: "Ocupação Militar: Avance divisões para o território recém-conquistado",
   phase_deploy_my_turn: "Fase 1 — Posicione +{count} divisões de reserva nos seus territórios",
+  phase_deploy_ready: "Fase 1 — Reservas posicionadas. Avance para a Fase de Ataque",
   phase_deploy_waiting: "Fase 1 — Posicionamento de reservas estratégicas",
   phase_attack_my_turn: "Fase 2 — Selecione um território aliado (≥2 divisões) e um alvo inimigo adjacente",
   phase_attack_waiting: "Fase 2 — Operações ofensivas em andamento",

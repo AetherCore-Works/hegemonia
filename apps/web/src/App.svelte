@@ -14,6 +14,7 @@
     createGame,
     emptyUnitCounts,
     getMovedInUnits,
+    getFriendlyPathDistance,
     getReachableManeuverTargets,
     getTerritoryBuildingLevel,
     getTerritoryUnits,
@@ -33,6 +34,8 @@
     AirMissionType,
     BuildingType,
     CompetitionMode,
+    DramaticEvent,
+    ObjectiveCard,
     CustomRulesConfig,
     GameState,
     MatchOrigin,
@@ -58,6 +61,7 @@
   } from "./components/CommandCenter.svelte";
   import Icon from "./components/Icon.svelte";
   import ObjectiveSelectionModal from "./components/ObjectiveSelectionModal.svelte";
+  import DramaticEventModal from "./components/DramaticEventModal.svelte";
   import WonderAlertToast from "./components/WonderAlertToast.svelte";
   import TutorialGuideModal from "./components/TutorialGuideModal.svelte";
   import VictoryModal from "./components/VictoryModal.svelte";
@@ -296,10 +300,13 @@
   let myPlayerState = $derived(game?.players.find((p) => p.id === myPlayerId) ?? null);
   let amIHost = $derived(lobbyPlayers.find((p) => p.token === myPlayerId)?.isHost ?? false);
 
-  let objectiveTargetTerritoryIds = $derived.by(() => {
-    if (!myPlayerState || !game) return new Set<string>();
-    const rule = myPlayerState.objective.rule;
+  function computeObjectiveTargetIds(
+    rule: ObjectiveCard["rule"] | undefined,
+    g: GameState | null,
+    viewerId: string | null,
+  ): Set<string> {
     const targetIds = new Set<string>();
+    if (!rule || !g) return targetIds;
     if (rule.type === "specific_territories") {
       for (const tid of rule.territoryIds) targetIds.add(tid);
       if (rule.extraAnyOf) {
@@ -312,15 +319,50 @@
         if (rule.continents.includes(t.continent)) targetIds.add(t.id);
       }
     } else if (rule.type === "destroy_color") {
-      const targetPlayer = game.players.find((p) => p.color === rule.targetColor);
-      if (targetPlayer && targetPlayer.id !== myPlayerId && !targetPlayer.eliminated) {
+      const targetPlayer = g.players.find((p) => p.color === rule.targetColor);
+      if (targetPlayer && targetPlayer.id !== viewerId && !targetPlayer.eliminated) {
         for (const t of CLASSIC_MAP.territories) {
-          if (game.territories[t.id]?.ownerId === targetPlayer.id) targetIds.add(t.id);
+          if (g.territories[t.id]?.ownerId === targetPlayer.id) targetIds.add(t.id);
         }
       }
     }
     return targetIds;
+  }
+
+  let previewObjective = $state<ObjectiveCard | null>(null);
+  let previewObjectiveTargetIds = $derived(
+    computeObjectiveTargetIds(previewObjective?.rule, game, myPlayerId),
+  );
+
+  let objectiveTargetTerritoryIds = $derived(
+    computeObjectiveTargetIds(myPlayerState?.objective.rule, game, myPlayerId),
+  );
+
+  let seenDramaticEventIds = new Set<string>();
+  let dramaticEventQueue = $state<DramaticEvent[]>([]);
+  let dramaticEventsMuted = $state(false);
+  let activeDramaticEvent = $derived(dramaticEventQueue[0] ?? null);
+
+  $effect(() => {
+    const events = game?.dramaticEvents ?? [];
+    const incoming: DramaticEvent[] = [];
+    for (const evt of events) {
+      if (!seenDramaticEventIds.has(evt.id)) {
+        seenDramaticEventIds.add(evt.id);
+        incoming.push(evt);
+      }
+    }
+    if (incoming.length > 0) {
+      dramaticEventQueue = [...dramaticEventQueue, ...incoming];
+      if (!dramaticEventsMuted) {
+        sound.playTurnRadioAlert();
+      }
+    }
   });
+
+  function dismissDramaticEvent() {
+    dramaticEventQueue = dramaticEventQueue.slice(1);
+  }
 
   let objectiveProgress = $derived.by(() => {
     if (!myPlayerState || !game) return null;
@@ -1129,7 +1171,26 @@
       return;
     }
     const available = subtractUnits(getTerritoryUnits(territory), getMovedInUnits(territory));
-    selectedUnits = selectUnits(available, Math.max(0, totalUnits(available) - 1));
+    const totalAvail = Math.max(0, totalUnits(available) - 1);
+    if (!selectedToId || !myPlayerId) {
+      selectedUnits = selectUnits(available, totalAvail);
+      return;
+    }
+    const toTerr = game.territories[selectedToId];
+    const fromDef = territoryById.get(selectedFromId);
+    const isNeighbor = Boolean(fromDef?.neighbors.includes(selectedToId));
+    const dist = getFriendlyPathDistance(game, selectedFromId, selectedToId, myPlayerId, CLASSIC_MAP);
+    const fromAir = hasTerritoryBuilding(territory, "airfield");
+    const toAir = Boolean(toTerr && hasTerritoryBuilding(toTerr, "airfield"));
+    const allowed: UnitCounts = {
+      infantry: dist <= 1 || isNeighbor ? available.infantry : 0,
+      artillery: dist <= 1 || isNeighbor ? available.artillery : 0,
+      tank: dist <= 2 ? available.tank : 0,
+      navy: dist <= 3 ? available.navy : 0,
+      aircraft: fromAir && toAir ? available.aircraft : 0,
+    };
+    const maxAllowed = Math.min(totalUnits(allowed), totalAvail);
+    selectedUnits = selectUnits(allowed, maxAllowed);
   }
 
   function getOccupationAvailable(): UnitCounts {
@@ -1411,8 +1472,8 @@
       {baseMapMode}
       overlays={mapOverlays}
       {cleanMapMode}
-      {highlightObjectiveTerritories}
-      {objectiveTargetTerritoryIds}
+      highlightObjectiveTerritories={highlightObjectiveTerritories || previewObjectiveTargetIds.size > 0}
+      objectiveTargetTerritoryIds={previewObjectiveTargetIds.size > 0 ? previewObjectiveTargetIds : objectiveTargetTerritoryIds}
       combatAnimations={activeCombatAnimations}
       {isCameraTransitioning}
       bind:selectedFromId
@@ -1424,14 +1485,27 @@
       {onTerritoryClick}
     />
 
-    <!-- ROUND 1 SECRET OBJECTIVE SELECTION MODAL (HEGEM-117) -->
+    <!-- ROUND 1 SECRET OBJECTIVE SELECTION MODAL (HEGEM-117 & HEGEM-163) -->
     {#if myPlayerState?.pendingObjectiveChoice && myPlayerState.availableObjectives && myPlayerState.availableObjectives.length > 0}
       <ObjectiveSelectionModal
         availableObjectives={myPlayerState.availableObjectives}
         doctrineId={myPlayerState.doctrineId}
-        onSelect={(objectiveId) => sendAction({ type: "choose_objective", objectiveId })}
+        onSelect={(objectiveId) => {
+          previewObjective = null;
+          sendAction({ type: "choose_objective", objectiveId });
+        }}
+        onPreviewObjective={(obj) => (previewObjective = obj)}
       />
     {/if}
+
+    <!-- FLOATING HOI4/EU4-STYLE CRITICAL EVENT DISPATCH (HEGEM-160) -->
+    <DramaticEventModal
+      event={activeDramaticEvent}
+      muted={dramaticEventsMuted}
+      onDismiss={dismissDramaticEvent}
+      onToggleMute={() => (dramaticEventsMuted = !dramaticEventsMuted)}
+      onFocusTerritory={(tid) => focusTerritory(tid, 1.5)}
+    />
 
     <!-- WONDER OF THE BASTION APOCALYPSE ALERT TOAST -->
     {#if activeWonderInfo && !game.winnerId}
