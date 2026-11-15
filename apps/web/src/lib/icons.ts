@@ -26,6 +26,7 @@ export const ICON_NAMES = [
   "arrow-right",
   "reset",
   "chevrons",
+  "grip",
 
   // Turn Phases (HEGEM-63 Semantically Distinct Phase Icons)
   "phase-deploy",
@@ -48,6 +49,7 @@ export const ICON_NAMES = [
   "navy",
   "port",
   "anchor",
+  "helmet",
 
   // Territorial Buildings & Fortifications
   "market",
@@ -60,6 +62,7 @@ export const ICON_NAMES = [
   "steel_mine",
   "oil_well",
   "refinery",
+  "wonder",
 
   // Logistics, Tactical Status & Combat Missions (Replacing System Emojis)
   "supply-cut",
@@ -212,6 +215,14 @@ export const ICON_CATALOG: Record<IconName, readonly IconShape[]> = {
   ],
   chevrons: [
     { tag: "path", attrs: { d: "m6 9 6 6 6-6M6 3l6 6 6-6" } },
+  ],
+  grip: [
+    { tag: "circle", attrs: { cx: 9, cy: 6, r: 1.5 } },
+    { tag: "circle", attrs: { cx: 9, cy: 12, r: 1.5 } },
+    { tag: "circle", attrs: { cx: 9, cy: 18, r: 1.5 } },
+    { tag: "circle", attrs: { cx: 15, cy: 6, r: 1.5 } },
+    { tag: "circle", attrs: { cx: 15, cy: 12, r: 1.5 } },
+    { tag: "circle", attrs: { cx: 15, cy: 18, r: 1.5 } },
   ],
 
   // --- Turn Phases (Deploy, Attack, Maneuver) ---
@@ -399,6 +410,14 @@ export const ICON_CATALOG: Record<IconName, readonly IconShape[]> = {
     { tag: "rect", attrs: { x: 5, y: 7, width: 6, height: 14, rx: 1 } },
     { tag: "rect", attrs: { x: 13, y: 11, width: 6, height: 10, rx: 1 } },
     { tag: "path", attrs: { d: "M8 7V3h8v8" } },
+  ],
+  // Wonder: Sovereign Bastion Monument / Citadel Spire with triumphant star beacon
+  wonder: [
+    { tag: "path", attrs: { d: "M12 2l2.2 4.8L19.5 7.5l-3.5 3.8.9 5.2-4.9-2.7-4.9 2.7.9-5.2-3.5-3.8 5.3-.7L12 2z" } },
+    { tag: "path", attrs: { d: "M4 22h16" } },
+    { tag: "path", attrs: { d: "M6 22v-3.5h12V22" } },
+    { tag: "line", attrs: { x1: 9.5, y1: 18.5, x2: 9.5, y2: 22 } },
+    { tag: "line", attrs: { x1: 14.5, y1: 18.5, x2: 14.5, y2: 22 } },
   ],
 
   // --- Logistics, Tactical Status & Combat Missions ---

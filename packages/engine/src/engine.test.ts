@@ -8,6 +8,7 @@ import {
   calculateTurnReinforcements,
   checkNavalBlockade,
   checkPlayerVictory,
+  cloneGameState,
   createGame,
   createPlayerView,
   createSeededRng,
@@ -3872,6 +3873,39 @@ describe("HEGEM-96: Manual Deploy Phase Transition (end_deploy)", () => {
       );
       expect(state.territories["franca"].units?.aircraft).toBe(1);
 
+      // Rejects explicit destination territory not owned by the coalition partner
+      state.territories["alemanha"].ownerId = "p2";
+      expect(() =>
+        applyAction(
+          state,
+          "p1",
+          {
+            type: "send_coalition_aircraft",
+            targetPlayerId: "p3",
+            fromTerritoryId: "inglaterra",
+            toTerritoryId: "alemanha",
+            quantity: 1,
+          },
+          rng
+        )
+      ).toThrow("não pertence ao parceiro de Coalizão");
+
+      // Rejects leaving 0 garrison divisions behind on aircraft transfer
+      expect(() =>
+        applyAction(
+          state,
+          "p1",
+          {
+            type: "send_coalition_aircraft",
+            targetPlayerId: "p3",
+            fromTerritoryId: "inglaterra",
+            toTerritoryId: "franca",
+            quantity: 2,
+          },
+          rng
+        )
+      ).toThrow();
+
       // 5. Extermination doctrine reinforcement bonus (+4 base divisions) and 0 0 0 0 economy protection
       const p2State = state.players.find((p) => p.id === "p2")!;
       p2State.doctrineId = "extermination";
@@ -3908,6 +3942,436 @@ describe("HEGEM-96: Manual Deploy Phase Transition (end_deploy)", () => {
       );
       expect(p1State.unplacedArmies).toBeLessThanOrEqual(50);
     });
+  });
+});
+
+describe("Proxy and Reactive State Cloning Resilience", () => {
+  it("safely clones deep Proxy objects via cloneGameState without throwing", () => {
+    const target = {
+      name: "test",
+      values: [1, 2, 3],
+      nested: { count: 10, items: [{ id: "a" }] },
+    };
+    const proxy = new Proxy(target, {});
+    const cloned = cloneGameState(proxy);
+    expect(cloned).toEqual(target);
+    expect(cloned).not.toBe(target);
+  });
+
+  it("applies actions when GameState is wrapped in a reactive Proxy (e.g. Svelte 5 $state)", () => {
+    const rng = createSeededRng("proxy-test");
+    const baseState = createGame({
+      id: "proxy-game",
+      seed: "proxy-seed",
+      players: [
+        { id: "p1", name: "Player 1", color: "blue", doctrineId: "standard" },
+        { id: "p2", name: "Player 2", color: "red", doctrineId: "blitzkrieg" },
+      ],
+    });
+    baseState.round = 2;
+    baseState.phase = "deploy";
+    const p1 = baseState.players[0];
+    p1.resources = { money: 100, steel: 50, oil: 50, gold: 20 };
+    const p1Terr = Object.values(baseState.territories).find((t) => t.ownerId === "p1")!;
+    p1Terr.buildings = [{ type: "market", level: 1 }];
+    p1.unplacedArmies = 3;
+
+    // Wrap in deep Proxy to simulate Svelte 5 $state
+    const createDeepProxy = (obj: any): any => {
+      if (typeof obj !== "object" || obj === null) return obj;
+      return new Proxy(obj, {
+        get(t, prop) {
+          const val = Reflect.get(t, prop);
+          return typeof val === "object" && val !== null ? createDeepProxy(val) : val;
+        },
+      });
+    };
+
+    const proxiedState = createDeepProxy(baseState);
+
+    // 1. Deploy action on proxied state
+    const afterDeploy = applyAction(
+      proxiedState,
+      "p1",
+      { type: "deploy", territoryId: p1Terr.id, armies: 2 },
+      rng
+    );
+    expect(afterDeploy.territories[p1Terr.id].armies).toBe(p1Terr.armies + 2);
+
+    // 2. Market trade action on proxied state
+    const proxiedAfterDeploy = createDeepProxy(afterDeploy);
+    const afterTrade = applyAction(
+      proxiedAfterDeploy,
+      "p1",
+      { type: "market_trade", resource: "steel", operation: "buy", quantity: 1 },
+      rng
+    );
+    expect(afterTrade.players[0].resources.steel).toBe(51);
+
+    // 3. Build structure action on proxied state
+    const proxiedAfterTrade = createDeepProxy(afterTrade);
+    const afterBuild = applyAction(
+      proxiedAfterTrade,
+      "p1",
+      { type: "build_structure", territoryId: p1Terr.id, buildingType: "industry" },
+      rng
+    );
+    expect(
+      afterBuild.territories[p1Terr.id].buildings?.some((b) => b.type === "industry")
+    ).toBe(true);
+
+    // 4. Create player view on proxied state
+    const view = createPlayerView(proxiedAfterTrade, "p1");
+    expect(view.players[0].id).toBe("p1");
+  });
+});
+
+describe("HEGEM-141: Doutrina Tall Soberana - Indústria Nível 2 e Dobro de Produção de Commodities", () => {
+  it("allows only tall_sovereign / defense_in_depth players to evolve Industry to Level 2 (cost: $6, 2 Steel)", () => {
+    const seed = "hegem141-upgrade-seed";
+    const rng = createSeededRng(seed);
+    let state = createGame({
+      id: "hegem141-game-1",
+      seed,
+      players: [
+        { id: "p1", name: "TallLord", color: "blue", doctrineId: "tall_sovereign" },
+        { id: "p2", name: "BlitzGeneral", color: "red", doctrineId: "blitzkrieg" },
+      ],
+    });
+    state.round = 2;
+    state.turnIndex = 0;
+    state.phase = "deploy";
+
+    const p1Terr = Object.values(state.territories).find((t) => t.ownerId === "p1")!;
+    p1Terr.buildings = [];
+    state.players[0].resources = { money: 20, steel: 10, oil: 10, gold: 10 };
+
+    // 1. Build Industry Lv. 1
+    state = applyAction(
+      state,
+      "p1",
+      { type: "build_structure", territoryId: p1Terr.id, buildingType: "industry" },
+      rng
+    );
+    expect(getTerritoryBuildingLevel(state.territories[p1Terr.id], "industry")).toBe(1);
+
+    // 2. Evolve Industry to Lv. 2
+    const moneyBeforeUpgrade = state.players[0].resources.money;
+    const steelBeforeUpgrade = state.players[0].resources.steel;
+    state = applyAction(
+      state,
+      "p1",
+      { type: "build_structure", territoryId: p1Terr.id, buildingType: "industry" },
+      rng
+    );
+    expect(getTerritoryBuildingLevel(state.territories[p1Terr.id], "industry")).toBe(2);
+    expect(state.players[0].resources.money).toBe(moneyBeforeUpgrade - 6);
+    expect(state.players[0].resources.steel).toBe(steelBeforeUpgrade - 2);
+
+    // 3. Cannot evolve beyond Level 2
+    expect(() => {
+      applyAction(
+        state,
+        "p1",
+        { type: "build_structure", territoryId: p1Terr.id, buildingType: "industry" },
+        rng
+      );
+    }).toThrow("A indústria neste território já está no nível máximo");
+
+    // 4. Non-tall player cannot evolve Industry to Level 2
+    const p2Terr = Object.values(state.territories).find((t) => t.ownerId === "p2")!;
+    p2Terr.buildings = [{ type: "industry", level: 1 }];
+    state.turnIndex = 1;
+    state.players[1].resources = { money: 20, steel: 10, oil: 10, gold: 10 };
+    expect(() => {
+      applyAction(
+        state,
+        "p2",
+        { type: "build_structure", territoryId: p2Terr.id, buildingType: "industry" },
+        rng
+      );
+    }).toThrow("Apenas generais com Doutrina de Desenvolvimento Tall (Fortaleza Soberana) podem expandir Indústria para o Nível 2");
+  });
+
+  it("doubles commodity production in territories with Industry Level 2 for Tall sovereign empire", () => {
+    const seed = "hegem141-econ-seed";
+    let state = createGame({
+      id: "hegem141-game-2",
+      seed,
+      players: [
+        { id: "p1", name: "TallLord", color: "blue", doctrineId: "tall_sovereign" },
+        { id: "p2", name: "Rival", color: "red" },
+      ],
+    });
+    state.round = 2;
+
+    // Isolate p1 to sao_paulo (steel) and inglaterra (no resource)
+    for (const t of CLASSIC_MAP.territories) {
+      state.territories[t.id].ownerId = "p2";
+      state.territories[t.id].buildings = [];
+    }
+    state.territories["sao_paulo"].ownerId = "p1";
+    state.territories["inglaterra"].ownerId = "p1";
+
+    // Scenario A: Industry Level 1 in sao_paulo and inglaterra
+    state.territories["sao_paulo"].buildings = [{ type: "industry", level: 1 }];
+    state.territories["inglaterra"].buildings = [{ type: "industry", level: 1 }];
+    const econLv1 = calculateTurnEconomy(state, "p1", CLASSIC_MAP);
+    // sao_paulo has steel: base yield 2 + Tall bonus 1 = 3 steel
+    expect(econLv1.steel).toBe(3);
+    // inglaterra has no resource: gives $2 dividend
+    expect(econLv1.buildingMoney).toBe(2);
+
+    // Scenario B: Industry Level 2 in sao_paulo and inglaterra
+    state.territories["sao_paulo"].buildings = [{ type: "industry", level: 2 }];
+    state.territories["inglaterra"].buildings = [{ type: "industry", level: 2 }];
+    const econLv2 = calculateTurnEconomy(state, "p1", CLASSIC_MAP);
+    // sao_paulo has steel: base yield 4 + Tall bonus 2 = 6 steel (doubled!)
+    expect(econLv2.steel).toBe(6);
+    // inglaterra has no resource: gives $4 dividend (doubled!)
+    expect(econLv2.buildingMoney).toBe(4);
+
+    // Scenario C: sao_paulo with Industry Level 2 + Steel Mine
+    state.territories["sao_paulo"].buildings = [
+      { type: "industry", level: 2 },
+      { type: "steel_mine", level: 1 },
+    ];
+    const econMine = calculateTurnEconomy(state, "p1", CLASSIC_MAP);
+    // Base 4 + Mine (2 * 2 = 4) + Tall bonus 2 = 10 steel
+    expect(econMine.steel).toBe(10);
+  });
+
+  it("correctly calculates refund when demolishing an Industry Level 2 structure", () => {
+    const seed = "hegem141-demolish-seed";
+    const rng = createSeededRng(seed);
+    let state = createGame({
+      id: "hegem141-game-3",
+      seed,
+      players: [
+        { id: "p1", name: "TallLord", color: "blue", doctrineId: "tall_sovereign" },
+        { id: "p2", name: "Rival", color: "red" },
+      ],
+    });
+    state.round = 2;
+    state.turnIndex = 0;
+    state.phase = "deploy";
+
+    const p1Terr = Object.values(state.territories).find((t) => t.ownerId === "p1")!;
+    p1Terr.buildings = [{ type: "industry", level: 2 }];
+    state.players[0].resources = { money: 0, steel: 0, oil: 0, gold: 0 };
+
+    // Total spent: base $6 + 1 steel, plus Lv. 2 upgrade $6 + 2 steel = $12 and 3 steel
+    // Refund: floor(12 * 0.5) = $6, ceil(3 * 0.5) = 2 steel
+    state = applyAction(
+      state,
+      "p1",
+      { type: "demolish_structure", territoryId: p1Terr.id, buildingType: "industry" },
+      rng
+    );
+    expect(state.territories[p1Terr.id].buildings?.length).toBe(0);
+    expect(state.players[0].resources.money).toBe(6);
+    expect(state.players[0].resources.steel).toBe(2);
+  });
+});
+
+describe("HEGEM-142: Objetivo Bastião e Construção da Maravilha Soberana (Fim do Mundo)", () => {
+  it("allows player with Bastion objective to construct Wonder in a fortified territory", () => {
+    const rng = createSeededRng("wonder_build_test");
+    let state = createGame({
+      id: "wonder_game",
+      seed: "wonder_seed",
+      players: [
+        { id: "p1", name: "BastionCommander", color: "blue", doctrineId: "tall_sovereign" },
+        { id: "p2", name: "Invader", color: "red", doctrineId: "blitzkrieg" },
+      ],
+    });
+    state.round = 2;
+    state.phase = "deploy";
+    state.turnIndex = 0;
+
+    const p1 = state.players.find((p) => p.id === "p1")!;
+    p1.pendingObjectiveChoice = false;
+    p1.objective = {
+      id: "obj_fortified_bastion",
+      descriptionPt: "Bastião Inexpugnável",
+      descriptionEn: "Impregnable Bastion",
+      rule: {
+        type: "fortified_bastion",
+        bastionTerritoryCount: 4,
+        roundsRequired: 5,
+      },
+      allowedDoctrines: ["tall_sovereign", "defense_in_depth"],
+    };
+
+    const p1Terr = Object.values(state.territories).find((t) => t.ownerId === "p1")!;
+    p1Terr.buildings = [];
+
+    p1.resources = { money: 200, steel: 50, oil: 5, gold: 5 };
+
+    // 1. Cannot build without fortification
+    expect(() =>
+      applyAction(state, "p1", { type: "build_structure", territoryId: p1Terr.id, buildingType: "wonder" }, rng)
+    ).toThrow(/previamente protegido por uma Fortaleza/);
+
+    // 2. Add fortification
+    p1Terr.buildings = [{ type: "fortification", level: 1 }];
+
+    // 3. Build Wonder successfully
+    state = applyAction(state, "p1", { type: "build_structure", territoryId: p1Terr.id, buildingType: "wonder" }, rng);
+
+    const updatedP1 = state.players.find((p) => p.id === "p1")!;
+    expect(updatedP1.resources.money).toBeLessThan(200);
+    expect(updatedP1.resources.steel).toBeLessThan(50);
+    expect(updatedP1.wonderStatus).toBe("constructing");
+    expect(state.territories[p1Terr.id].buildings?.some((b) => b.type === "wonder")).toBe(true);
+    expect(state.log.some((l) => l.includes("OBRA DO DIA FINAL"))).toBe(true);
+
+    // 4. Cannot build a second Wonder
+    const secondTerr = Object.values(state.territories).find((t) => t.ownerId === "p1" && t.id !== p1Terr.id)!;
+    secondTerr.buildings = [{ type: "fortification", level: 1 }];
+    expect(() =>
+      applyAction(state, "p1", { type: "build_structure", territoryId: secondTerr.id, buildingType: "wonder" }, rng)
+    ).toThrow(/já possui uma Maravilha/);
+  });
+
+  it("advances wonder countdown each round and awards immediate victory after 3 rounds (World Ends)", () => {
+    const rng = createSeededRng("wonder_apocalypse_test");
+    let state = createGame({
+      id: "apocalypse_game",
+      seed: "apocalypse_seed",
+      players: [
+        { id: "p1", name: "SovereignBuilder", color: "blue", doctrineId: "tall_sovereign" },
+        { id: "p2", name: "Challenger", color: "red", doctrineId: "standard" },
+      ],
+    });
+    state.round = 2;
+    state.phase = "attack";
+    state.turnIndex = 0;
+
+    const p1 = state.players.find((p) => p.id === "p1")!;
+    p1.pendingObjectiveChoice = false;
+    p1.objective = {
+      id: "obj_fortified_bastion",
+      descriptionPt: "Bastião Inexpugnável",
+      descriptionEn: "Impregnable Bastion",
+      rule: {
+        type: "fortified_bastion",
+        bastionTerritoryCount: 4,
+        roundsRequired: 5,
+      },
+    };
+
+    const p1Terr = Object.values(state.territories).find((t) => t.ownerId === "p1")!;
+    p1Terr.buildings = [
+      { type: "fortification", level: 1 },
+      { type: "wonder", level: 1 },
+    ];
+    p1.wonderStatus = "countdown";
+    p1.wonderCountdownLeft = 3;
+
+    // Check progress tracking includes Wonder
+    const progInitial = calculateObjectiveProgress(state, "p1", CLASSIC_MAP);
+    expect(progInitial.metrics.some((m) => m.label.includes("Cidadela"))).toBe(true);
+
+    const advanceFullRound = () => {
+      for (let i = 0; i < state.players.length; i++) {
+        const activeP = state.players[state.turnIndex];
+        activeP.unplacedArmies = 0;
+        state.phase = "attack";
+        state = applyAction(state, activeP.id, { type: "end_turn" }, rng);
+        if (state.winnerId) break;
+      }
+    };
+
+    // Pass Round 2 -> Round 3
+    advanceFullRound();
+
+    // Round 3 begins: countdown should now be 2
+    const p1Round3 = state.players.find((p) => p.id === "p1")!;
+    expect(p1Round3.wonderCountdownLeft).toBe(2);
+    expect(state.winnerId).toBeNull();
+
+    // Advance Round 3 -> Round 4
+    advanceFullRound();
+
+    // Round 4 begins: countdown should now be 1
+    const p1Round4 = state.players.find((p) => p.id === "p1")!;
+    expect(p1Round4.wonderCountdownLeft).toBe(1);
+    expect(state.winnerId).toBeNull();
+
+    // Advance Round 4 -> Round 5 (countdown hits 0: VICTORY)
+    advanceFullRound();
+
+    // Round 5: World ends, player 1 wins!
+    const p1Round5 = state.players.find((p) => p.id === "p1")!;
+    expect(p1Round5.wonderCountdownLeft).toBe(0);
+    expect(state.winnerId).toBe("p1");
+    expect(state.phase).toBe("game_over");
+    expect(checkPlayerVictory(state, "p1", CLASSIC_MAP)).toBe(true);
+  });
+
+  it("dismantles the Wonder and resets the apocalypse countdown when an enemy breaches and conquers the territory", () => {
+    const rng = createSeededRng("wonder_breach_test");
+    let state = createGame({
+      id: "breach_game",
+      seed: "breach_seed",
+      players: [
+        { id: "p1", name: "Defender", color: "blue", doctrineId: "tall_sovereign" },
+        { id: "p2", name: "SiegeMaster", color: "red", doctrineId: "standard" },
+      ],
+    });
+    state.round = 3;
+    state.phase = "attack";
+    state.turnIndex = 1; // p2's turn to attack
+
+    const p1 = state.players.find((p) => p.id === "p1")!;
+    p1.wonderRoundsHeld = 2; // on verge of apocalypse!
+
+    // Setup adjacent combat: p2 in Omsk attacking p1 in Cazaquistão (which has the Wonder)
+    const defTerr = state.territories["cazaquistao"] ?? Object.values(state.territories)[0];
+    defTerr.ownerId = "p1";
+    defTerr.armies = 1;
+    defTerr.units = { infantry: 1, tank: 0, artillery: 0, aircraft: 0, navy: 0 };
+    defTerr.buildings = [
+      { type: "fortification", level: 1 },
+      { type: "wonder", level: 1 },
+    ];
+
+    const attTerr = Object.values(state.territories).find(
+      (t) => t.id !== defTerr.id && CLASSIC_MAP.territories.find((m) => m.id === t.id)?.neighbors.includes(defTerr.id)
+    )!;
+    attTerr.ownerId = "p2";
+    attTerr.armies = 10;
+    attTerr.units = { infantry: 10, tank: 0, artillery: 0, aircraft: 0, navy: 0 };
+
+    // Mock RNG to guarantee attacker wins
+    const fixedRng = createSeededRng("fixed_roll");
+    let rollCount = 0;
+    fixedRng.rollD6 = () => {
+      rollCount++;
+      return rollCount <= 3 ? 6 : 1;
+    };
+
+    state = applyAction(
+      state,
+      "p2",
+      {
+        type: "attack",
+        fromTerritoryId: attTerr.id,
+        toTerritoryId: defTerr.id,
+        armies: 3,
+      },
+      fixedRng
+    );
+
+    // Territory was conquered by p2
+    expect(state.territories[defTerr.id].ownerId).toBe("p2");
+    // Wonder is dismantled
+    expect(state.territories[defTerr.id].buildings?.some((b) => b.type === "wonder")).toBe(false);
+    // Defender countdown reset to 0
+    expect(state.players.find((p) => p.id === "p1")!.wonderRoundsHeld).toBe(0);
+    // Cancellation logged
+    expect(state.log.some((l) => l.includes("CIDADELA DO DIA FINAL DESTRUÍDA"))).toBe(true);
   });
 });
 

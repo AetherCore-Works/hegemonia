@@ -39,6 +39,7 @@ import {
   ROLEPLAY_OBJECTIVES,
 } from "@hegemonia/maps";
 import { createSeededRng, hashSeed, type SeededRng } from "./rng.js";
+export { createSeededRng, type SeededRng } from "./rng.js";
 import { applyTacticalScenario } from "./scenarios.js";
 import {
   applyDoctrineCombatDiceModifiers,
@@ -91,6 +92,19 @@ export interface CreateGameOptions {
 export * from "./doctrines.js";
 export * from "./scenarios.js";
 export * from "./bot.js";
+
+/**
+ * Safe deep-clone utility for GameState and game entities.
+ * Uses native structuredClone when supported and safe, with JSON serialization fallback
+ * to gracefully handle reactive Proxies (e.g. Svelte 5 $state) and browser window environments.
+ */
+export function cloneGameState<T>(val: T): T {
+  try {
+    return structuredClone(val);
+  } catch {
+    return JSON.parse(JSON.stringify(val));
+  }
+}
 
 /**
  * Card trade progression with a linear limit cap at trade 10 (max 35 base armies) to prevent exponential late-game explosion:
@@ -224,7 +238,7 @@ export const FORTIFICATION_LEVEL_2_COST: BuildingCost = {
 };
 
 export const INDUSTRY_LEVEL_2_COST: BuildingCost = {
-  money: 4,
+  money: 6,
   steel: 2,
 };
 
@@ -983,15 +997,15 @@ export function calculateTurnEconomy(
 
     const resourceYield = hasIndustry ? (isIndLv2 ? 4 : 2) : 1;
     if (def.resource === "steel") {
-      steel += resourceYield + (hasSteelMine ? 2 : 0);
+      steel += resourceYield + (hasSteelMine ? (isIndLv2 ? 4 : 2) : 0);
     } else if (def.resource === "oil") {
-      oil += resourceYield + (hasOilWell ? 2 : 0);
+      oil += resourceYield + (hasOilWell ? (isIndLv2 ? 4 : 2) : 0);
     } else if (def.resource === "gold") {
       gold += resourceYield;
-      goldPassiveMoney += 2;
+      goldPassiveMoney += isIndLv2 ? 4 : 2;
     } else {
-      if (hasSteelMine) steel += 1;
-      if (hasOilWell) oil += 1;
+      if (hasSteelMine) steel += isIndLv2 ? 2 : 1;
+      if (hasOilWell) oil += isIndLv2 ? 2 : 1;
     }
 
     if (hasRefinery) {
@@ -1036,9 +1050,12 @@ export function calculateTurnEconomy(
     if (occupiedTerritories.length <= 5) {
       for (const terr of occupiedTerritories) {
         const def = mapById.get(terr.id);
-        if (def?.resource === "steel") steel += 1;
-        if (def?.resource === "oil") oil += 1;
-        if (def?.resource === "gold") gold += 1;
+        const indBldg = (terr.buildings ?? []).find((b) => b.type === "industry");
+        const isIndLv2 = (indBldg?.level ?? 1) >= 2;
+        const bonus = isIndLv2 ? 2 : 1;
+        if (def?.resource === "steel") steel += bonus;
+        if (def?.resource === "oil") oil += bonus;
+        if (def?.resource === "gold") gold += bonus;
       }
     } else {
       const overextPenalty = Math.min(0.75, (occupiedTerritories.length - 5) * 0.15);
@@ -1304,7 +1321,7 @@ export function createGame(opts: CreateGameOptions): GameState {
     worldTension: 0,
     treaties: [],
     coalitions: [],
-    marketPrices: structuredClone(INITIAL_MARKET_PRICES),
+    marketPrices: cloneGameState(INITIAL_MARKET_PRICES),
     investmentRoutes: [],
     borderTrades: [],
     rulesConfig,
@@ -1641,10 +1658,11 @@ export function calculateObjectiveProgress(
         pct: Math.round((heldCountdown / 6) * 100),
       },
     ];
+
     return {
       completionPct,
-      held: player.bastionRoundsHeld ?? 0,
-      total: rule.roundsRequired,
+      held: heldCountdown,
+      total: 6,
       description: player.objective.descriptionPt,
       metrics,
     };
@@ -1749,7 +1767,7 @@ export function applyAction(
     throw new Error("A partida já terminou.");
   }
 
-  const state: GameState = structuredClone(prevState);
+  const state: GameState = cloneGameState(prevState);
   const currentPlayer = state.players[state.turnIndex];
   const actingPlayer = state.players.find((p) => p.id === playerId);
   if (!actingPlayer || actingPlayer.eliminated) {
@@ -1782,7 +1800,7 @@ export function applyAction(
   if (currentPlayer) {
     currentPlayer.resources = currentPlayer.resources ?? { money: 0, steel: 0, oil: 0, gold: 0 };
   }
-  state.marketPrices = state.marketPrices ?? structuredClone(INITIAL_MARKET_PRICES);
+  state.marketPrices = state.marketPrices ?? cloneGameState(INITIAL_MARKET_PRICES);
   state.investmentRoutes = state.investmentRoutes ?? [];
   state.borderTrades = state.borderTrades ?? [];
 
@@ -2299,6 +2317,10 @@ export function applyAction(
         totalMoneySpent += FORTIFICATION_LEVEL_2_COST.money;
         totalSteelSpent += FORTIFICATION_LEVEL_2_COST.steel;
       }
+      if (action.buildingType === "industry" && targetBldg.level >= 2) {
+        totalMoneySpent += INDUSTRY_LEVEL_2_COST.money;
+        totalSteelSpent += INDUSTRY_LEVEL_2_COST.steel;
+      }
 
       const moneyRefund = Math.floor(totalMoneySpent * 0.5);
       const steelRefund = Math.ceil(totalSteelSpent * 0.5);
@@ -2309,7 +2331,7 @@ export function applyAction(
 
       const buildingNamesPt: Record<BuildingType, string> = {
         market: "Mercado Global",
-        industry: "Complexo Industrial",
+        industry: targetBldg.level >= 2 ? "Complexo Industrial Nv. 2" : "Indústria Básica Nv. 1",
         fortification: targetBldg.level >= 2 ? "Fortaleza Nv. 2" : "Casamata Nv. 1",
         airfield: "Aeródromo Militar",
         port: "Porto Naval",
@@ -3373,6 +3395,22 @@ export function applyAction(
           toTerr.buildings = survivingBuildings;
         }
 
+        // HEGEM-142: Invasão e destruição da Cidadela do Dia Final em território conquistado
+        if (defenderPlayer && ((defenderPlayer.wonderRoundsHeld ?? 0) > 0 || defenderPlayer.wonderStatus)) {
+          const hadWonder = toTerr.buildings?.some((b) => b.type === "wonder");
+          if (hadWonder) {
+            defenderPlayer.wonderRoundsHeld = 0;
+            defenderPlayer.wonderStatus = undefined;
+            defenderPlayer.wonderConstructionLeft = undefined;
+            defenderPlayer.wonderCountdownLeft = undefined;
+            defenderPlayer.wonderTerritoryId = undefined;
+            toTerr.buildings = (toTerr.buildings ?? []).filter((b) => b.type !== "wonder");
+            state.log.push(
+              `💥 CIDADELA DO DIA FINAL DESTRUÍDA: As tropas de ${currentPlayer.name} invadiram ${toName}! O monumento ruiu e a contagem de ${defenderPlayer.name} foi cancelada!`
+            );
+          }
+        }
+
         if (currentPlayer.capitalTerritoryId === toTerr.id && currentPlayer.isCapitalLost) {
           currentPlayer.isCapitalLost = false;
           currentPlayer.economicPenaltyMultiplier = 1.0;
@@ -4337,8 +4375,16 @@ export function applyAction(
         throw new Error("O território de origem deve manter ao menos 1 divisão de guarnição.");
       }
 
-      let destTerr = action.toTerritoryId ? state.territories[action.toTerritoryId] : undefined;
-      if (!destTerr || destTerr.ownerId !== target.id) {
+      let destTerr: TerritoryState | undefined;
+      if (action.toTerritoryId) {
+        const requestedDest = state.territories[action.toTerritoryId];
+        if (!requestedDest || requestedDest.ownerId !== target.id) {
+          throw new Error(
+            "O território de destino selecionado não pertence ao parceiro de Coalizão."
+          );
+        }
+        destTerr = requestedDest;
+      } else {
         destTerr =
           (target.capitalTerritoryId &&
           state.territories[target.capitalTerritoryId]?.ownerId === target.id
@@ -4786,7 +4832,7 @@ export function createPlayerView(
   state: GameState,
   viewerPlayerId: string | null
 ): GameState {
-  const clone = structuredClone(state);
+  const clone = cloneGameState(state);
   clone.deck = [];
   clone.discardPile = [];
 

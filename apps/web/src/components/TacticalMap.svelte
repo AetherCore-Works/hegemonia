@@ -14,7 +14,13 @@
 </script>
 
 <script lang="ts">
-  import { formatCompactTroops, type GameState, type PlayerColor } from "@hegemonia/shared";
+  import {
+    formatCompactTroops,
+    type GameState,
+    type PlayerColor,
+    type TacticalPingEvent,
+    type TacticalPingKind,
+  } from "@hegemonia/shared";
   import {
     CLASSIC_MAP,
     DIRECT_SEA_LINKS,
@@ -51,7 +57,11 @@
     cleanMapMode = false,
     highlightObjectiveTerritories = false,
     objectiveTargetTerritoryIds = new Set<string>(),
+    previewObjectiveTargetTerritoryIds = new Set<string>(),
     combatAnimations = [],
+    activeTacticalPings = [],
+    pingMode = false,
+    onSendTacticalPing,
     selectedFromId = $bindable(null),
     selectedToId = $bindable(null),
     hoveredTerritoryId = $bindable(null),
@@ -69,7 +79,11 @@
     cleanMapMode?: boolean;
     highlightObjectiveTerritories?: boolean;
     objectiveTargetTerritoryIds?: Set<string>;
+    previewObjectiveTargetTerritoryIds?: Set<string>;
     combatAnimations?: ActiveCombatAnimation[];
+    activeTacticalPings?: TacticalPingEvent[];
+    pingMode?: boolean;
+    onSendTacticalPing?: (territoryId: string, kind: TacticalPingKind) => void;
     selectedFromId?: string | null;
     selectedToId?: string | null;
     hoveredTerritoryId?: string | null;
@@ -79,6 +93,60 @@
     isCameraTransitioning?: boolean;
     onTerritoryClick: (terrId: string) => void;
   } = $props();
+
+  let pendingPingTerritoryId = $state<string | null>(null);
+  let pendingPingOffset = $state<number>(0);
+
+  const TACTICAL_PING_META: Record<
+    TacticalPingKind,
+    { color: string; bg: string; icon: IconName; labelKey: string; dx: number; dy: number }
+  > = {
+    defense: {
+      color: "#38bdf8",
+      bg: "#082f49",
+      icon: "shield",
+      labelKey: "comms_ping_defense",
+      dx: -24,
+      dy: -16,
+    },
+    attack: {
+      color: "#ef4444",
+      bg: "#450a0a",
+      icon: "target",
+      labelKey: "comms_ping_attack",
+      dx: 24,
+      dy: -16,
+    },
+    danger: {
+      color: "#f59e0b",
+      bg: "#451a03",
+      icon: "alert",
+      labelKey: "comms_ping_danger",
+      dx: -24,
+      dy: 16,
+    },
+    rally: {
+      color: "#facc15",
+      bg: "#422006",
+      icon: "flag",
+      labelKey: "comms_ping_rally",
+      dx: 24,
+      dy: 16,
+    },
+  };
+
+  const TACTICAL_PING_KINDS: TacticalPingKind[] = ["defense", "attack", "danger", "rally"];
+
+  $effect(() => {
+    if (!pingMode && !pendingPingTerritoryId) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        pendingPingTerritoryId = null;
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
 
   const effectiveBaseMode = $derived<BaseMapMode>(
     baseMapMode ?? (mapMode === "geopolitical" ? "geopolitical" : "cartographic")
@@ -742,10 +810,14 @@
                   (fromTerrState?.armies ?? 0) >= 2 &&
                   territoryById.get(selectedFromId)?.neighbors.includes(t.id)) ||
                  isManeuverDest)}
+              {@const isPreviewMode = previewObjectiveTargetTerritoryIds.size > 0}
+              {@const isPreviewTarget = isPreviewMode && previewObjectiveTargetTerritoryIds.has(t.id)}
               {@const isObjTarget = highlightObjectiveTerritories && objectiveTargetTerritoryIds.has(t.id)}
               {@const isObjOwned = isObjTarget && tState.ownerId === myPlayerId}
               {@const isObjPending = isObjTarget && tState.ownerId !== myPlayerId}
-              {@const isObjDimmed = highlightObjectiveTerritories && objectiveTargetTerritoryIds.size > 0 && !isObjTarget}
+              {@const isObjDimmed =
+                (isPreviewMode && !isPreviewTarget) ||
+                (!isPreviewMode && highlightObjectiveTerritories && objectiveTargetTerritoryIds.size > 0 && !isObjTarget)}
 
               <!-- svelte-ignore a11y_click_events_have_key_events -->
               <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -754,7 +826,18 @@
                 data-testid={offsetX === 0 ? `territory-${t.id}` : `territory-${t.id}-clone`}
                 data-territory-id={t.id}
                 data-primary-globe={offsetX === 0 ? "true" : undefined}
-                onclick={() => onTerritoryClick(t.id)}
+                onclick={(e) => {
+                  if (onSendTacticalPing && (e.altKey || pingMode)) {
+                    e.stopPropagation();
+                    pendingPingTerritoryId = pendingPingTerritoryId === t.id ? null : t.id;
+                    pendingPingOffset = offsetX;
+                    return;
+                  }
+                  if (pendingPingTerritoryId) {
+                    pendingPingTerritoryId = null;
+                  }
+                  onTerritoryClick(t.id);
+                }}
                 onmouseenter={() => (hoveredTerritoryId = t.id)}
                 onmouseleave={() => {
                   if (hoveredTerritoryId === t.id) hoveredTerritoryId = null;
@@ -765,23 +848,34 @@
                 <path
                   class:maneuver-dest-pulse={isManeuverDest}
                   class:partisan-reloc-pulse={isPartisanRelocTarget && !isSelected}
+                  class:objective-preview-aura={isPreviewTarget}
                   d={t.svgPath}
-                  fill={isObjOwned ? "#059669" : isObjPending ? "#dc2626" : activeFill}
-                  fill-opacity={isObjTarget
-                    ? "0.85"
+                  fill={isPreviewTarget
+                    ? "#f59e0b"
+                    : isObjOwned
+                      ? "#059669"
+                      : isObjPending
+                        ? "#dc2626"
+                        : activeFill}
+                  fill-opacity={isPreviewTarget
+                    ? "0.68"
+                    : isObjTarget
+                      ? "0.85"
+                      : isSelected
+                        ? "0.88"
+                        : effectiveBaseMode === "cartographic"
+                          ? "0.42"
+                          : isBlackTerritory
+                            ? "0.96"
+                            : "0.88"}
+                  stroke={isPreviewTarget
+                    ? "#facc15"
                     : isSelected
-                      ? "0.88"
-                      : effectiveBaseMode === "cartographic"
-                        ? "0.42"
-                        : isBlackTerritory
-                          ? "0.96"
-                          : "0.88"}
-                  stroke={isSelected
-                    ? "#ffffff"
-                    : isPartisanRelocTarget
-                      ? "#f59e0b"
-                      : isManeuverDest
-                        ? maneuverStrokeColor
+                      ? "#ffffff"
+                      : isPartisanRelocTarget
+                        ? "#f59e0b"
+                        : isManeuverDest
+                          ? maneuverStrokeColor
                         : isEligibleManeuverOrigin
                           ? "#38bdf8"
                           : isValidTarget
@@ -795,10 +889,12 @@
                                   : isBlackTerritory
                                     ? "#CBD5E1"
                                     : "rgba(9, 13, 22, 0.95)"}
-                  stroke-width={isSelected
-                    ? "2.6"
-                    : isPartisanRelocTarget
-                      ? "2.8"
+                  stroke-width={isPreviewTarget
+                    ? "2.8"
+                    : isSelected
+                      ? "2.6"
+                      : isPartisanRelocTarget
+                        ? "2.8"
                       : isManeuverDest
                         ? "2.8"
                         : isEligibleManeuverOrigin
@@ -812,14 +908,14 @@
                                 : "1.25"}
                   stroke-dasharray={isAirfieldManeuverTarget ? "5,3" : isEligibleManeuverOrigin ? "4,3" : "none"}
                   stroke-linejoin="round"
-                  filter={isSelected || isValidTarget
+                  filter={isPreviewTarget || isSelected || isValidTarget
                     ? "url(#glow-gold)"
                     : isObjPending
                       ? "url(#glow-red)"
                       : isObjOwned
                         ? "url(#glow-green)"
                         : undefined}
-                  style={isObjDimmed ? "opacity: 0.28; transition: opacity 0.25s ease;" : "transition: opacity 0.25s ease;"}
+                  style={isObjDimmed ? "opacity: 0.25; transition: opacity 0.25s ease;" : "transition: opacity 0.25s ease;"}
                 />
 
                 {#if effectiveBaseMode === "cartographic"}
@@ -1279,24 +1375,28 @@
                                 width="4.6"
                                 height="5.6"
                                 rx="0.9"
-                                fill={b.type === "market"
+                                fill={b.type === "wonder"
                                   ? "#451a03"
-                                  : b.type === "industry"
-                                    ? "#1e293b"
-                                    : b.type === "fortification"
-                                      ? (b.level === 2 ? "#082f49" : "#1e293b")
-                                      : b.type === "airfield"
-                                        ? "#172554"
-                                        : "#042f2e"}
-                                stroke={b.type === "market"
+                                  : b.type === "market"
+                                    ? "#451a03"
+                                    : b.type === "industry"
+                                      ? (b.level === 2 ? "#431407" : "#1e293b")
+                                      : b.type === "fortification"
+                                        ? (b.level === 2 ? "#082f49" : "#1e293b")
+                                        : b.type === "airfield"
+                                          ? "#172554"
+                                          : "#042f2e"}
+                                stroke={b.type === "wonder"
                                   ? "#f59e0b"
-                                  : b.type === "industry"
-                                    ? "#fb923c"
-                                    : b.type === "fortification"
-                                      ? (b.level === 2 ? "#38bdf8" : "#94a3b8")
-                                      : b.type === "airfield"
-                                        ? "#60a5fa"
-                                        : "#2dd4bf"}
+                                  : b.type === "market"
+                                    ? "#f59e0b"
+                                    : b.type === "industry"
+                                      ? (b.level === 2 ? "#f97316" : "#fb923c")
+                                      : b.type === "fortification"
+                                        ? (b.level === 2 ? "#38bdf8" : "#94a3b8")
+                                        : b.type === "airfield"
+                                          ? "#60a5fa"
+                                          : "#2dd4bf"}
                                 stroke-width="0.55"
                               />
                               <Icon
@@ -1306,15 +1406,17 @@
                                 size={3.8}
                                 x={-1.9}
                                 y={-1.9}
-                                color={b.type === "market"
-                                  ? "#fde047"
-                                  : b.type === "industry"
-                                    ? "#fdba74"
-                                    : b.type === "fortification"
-                                      ? (b.level === 2 ? "#7dd3fc" : "#e2e8f0")
-                                      : b.type === "airfield"
-                                        ? "#93c5fd"
-                                        : "#5eead4"}
+                                color={b.type === "wonder"
+                                  ? "#fbbf24"
+                                  : b.type === "market"
+                                    ? "#fde047"
+                                    : b.type === "industry"
+                                      ? (b.level === 2 ? "#ffedd5" : "#fdba74")
+                                      : b.type === "fortification"
+                                        ? (b.level === 2 ? "#7dd3fc" : "#e2e8f0")
+                                        : b.type === "airfield"
+                                          ? "#93c5fd"
+                                          : "#5eead4"}
                                 strokeWidth={2}
                               />
                             {:else}
@@ -1360,8 +1462,10 @@
                           cx={xOffset}
                           cy="0"
                           r="1.6"
-                          fill={b.type === "fortification"
-                            ? (b.level === 2 ? "#38bdf8" : "#94a3b8")
+                          fill={b.type === "wonder"
+                            ? "#fbbf24"
+                            : b.type === "fortification"
+                              ? (b.level === 2 ? "#38bdf8" : "#94a3b8")
                             : b.type === "market"
                               ? "#f59e0b"
                               : b.type === "civilian_factory"
@@ -1375,7 +1479,7 @@
                                       : b.type === "refinery"
                                         ? "#06b6d4"
                                         : b.type === "industry"
-                                          ? "#fb923c"
+                                          ? (b.level === 2 ? "#f97316" : "#fb923c")
                                           : b.type === "airfield"
                                             ? "#60a5fa"
                                             : "#2dd4bf"}
@@ -1772,6 +1876,134 @@
                 marker-end="url(#maneuver-arrow)"
                 class="fx-maneuver-vector"
               />
+            </g>
+          {/if}
+
+          <!-- PASS F (Layer 8 - Coalition Tactical Radar Pings & Radial Selector — HEGEM-99) -->
+          {#if activeTacticalPings.length > 0}
+            <g class="layer-tactical-pings" pointer-events="none">
+              {#each activeTacticalPings as ping (ping.id)}
+                {@const pCoords = getTerritoryBadgeCoords(ping.territoryId)}
+                {@const meta = TACTICAL_PING_META[ping.kind]}
+                <g
+                  class="tactical-ping-beacon"
+                  data-testid={offsetX === 0 ? `tactical-ping-${ping.territoryId}-${ping.kind}` : undefined}
+                  transform="translate({pCoords.x.toFixed(1)}, {pCoords.y.toFixed(1)})"
+                  style="--ping-dur: {ping.durationMs}ms;"
+                >
+                  <circle class="tactical-ping-wave w1" cx="0" cy="0" r="8" stroke={meta.color} />
+                  <circle class="tactical-ping-wave w2" cx="0" cy="0" r="8" stroke={meta.color} />
+                  <circle class="tactical-ping-wave w3" cx="0" cy="0" r="8" stroke={meta.color} />
+                  <circle
+                    cx="0"
+                    cy="-17"
+                    r="8.5"
+                    fill={meta.bg}
+                    stroke={meta.color}
+                    stroke-width="1.4"
+                    filter="drop-shadow(0 2px 6px rgba(0, 0, 0, 0.9))"
+                  />
+                  <Icon
+                    name={meta.icon}
+                    size={9.5}
+                    x={-4.75}
+                    y={-21.75}
+                    color={meta.color}
+                    strokeWidth={2.2}
+                  />
+                  <g transform="translate(0, -29)">
+                    <rect
+                      x="-26"
+                      y="-5"
+                      width="52"
+                      height="10"
+                      rx="3"
+                      fill="rgba(6, 10, 20, 0.92)"
+                      stroke={meta.color}
+                      stroke-width="0.7"
+                    />
+                    <text
+                      x="0"
+                      y="0.3"
+                      text-anchor="middle"
+                      dominant-baseline="central"
+                      fill={meta.color}
+                      font-size="4.8"
+                      font-weight="800"
+                      font-family="system-ui, -apple-system, sans-serif"
+                    >
+                      {t(meta.labelKey)} • {ping.senderName.slice(0, 8)}
+                    </text>
+                  </g>
+                </g>
+              {/each}
+            </g>
+          {/if}
+
+          {#if pendingPingTerritoryId && onSendTacticalPing && offsetX === pendingPingOffset}
+            {@const rCoords = getTerritoryBadgeCoords(pendingPingTerritoryId)}
+            <g
+              class="tactical-ping-radial"
+              transform="translate({rCoords.x.toFixed(1)}, {rCoords.y.toFixed(1)})"
+              data-testid="tactical-ping-radial"
+            >
+              <circle
+                cx="0"
+                cy="0"
+                r="26"
+                fill="rgba(5, 10, 20, 0.52)"
+                stroke="rgba(250, 204, 21, 0.45)"
+                stroke-width="1"
+                stroke-dasharray="3,2"
+                pointer-events="none"
+              />
+              {#each TACTICAL_PING_KINDS as kind}
+                {@const meta = TACTICAL_PING_META[kind]}
+                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <g
+                  class="radial-ping-btn"
+                  transform="translate({meta.dx}, {meta.dy})"
+                  data-testid={`ping-option-${kind}`}
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    const targetId = pendingPingTerritoryId;
+                    pendingPingTerritoryId = null;
+                    if (targetId) onSendTacticalPing(targetId, kind);
+                  }}
+                >
+                  <title>{t(meta.labelKey)}</title>
+                  <circle
+                    cx="0"
+                    cy="0"
+                    r="11.5"
+                    fill={meta.bg}
+                    stroke={meta.color}
+                    stroke-width="1.4"
+                    filter="drop-shadow(0 2px 5px rgba(0, 0, 0, 0.9))"
+                  />
+                  <Icon
+                    name={meta.icon}
+                    size={10.5}
+                    x={-5.25}
+                    y={-5.25}
+                    color={meta.color}
+                    strokeWidth={2.2}
+                  />
+                </g>
+              {/each}
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <g
+                class="radial-ping-cancel"
+                onclick={(e) => {
+                  e.stopPropagation();
+                  pendingPingTerritoryId = null;
+                }}
+              >
+                <circle cx="0" cy="0" r="6.5" fill="#0f172a" stroke="#64748b" stroke-width="1" />
+                <Icon name="close" size={6.5} x={-3.25} y={-3.25} color="#cbd5e1" strokeWidth={2.2} />
+              </g>
             </g>
           {/if}
         </g>
@@ -2331,5 +2563,65 @@
       stroke-opacity: 1;
       filter: drop-shadow(0 0 6px rgba(245, 158, 11, 0.95));
     }
+  }
+
+  /* --- HEGEM-144: Objective Selection Map Preview Glow --- */
+  .objective-preview-aura {
+    animation: objectivePreviewPulse 1.4s ease-in-out infinite;
+  }
+  @keyframes objectivePreviewPulse {
+    0%, 100% {
+      fill-opacity: 0.56;
+      stroke-width: 2.4;
+    }
+    50% {
+      fill-opacity: 0.78;
+      stroke-width: 3.4;
+    }
+  }
+
+  /* --- HEGEM-99: Coalition Tactical Radar Ping Waves & Radial Selector --- */
+  .tactical-ping-beacon {
+    animation: tacticalPingLifecycle var(--ping-dur, 7000ms) ease-out forwards;
+  }
+  @keyframes tacticalPingLifecycle {
+    0%, 82% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+  .tactical-ping-wave {
+    fill: none;
+    stroke-width: 1.6;
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: tacticalRadarWave 1.8s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+  }
+  .tactical-ping-wave.w2 {
+    animation-delay: 0.55s;
+  }
+  .tactical-ping-wave.w3 {
+    animation-delay: 1.1s;
+  }
+  @keyframes tacticalRadarWave {
+    0% {
+      transform: scale(0.5);
+      opacity: 0.95;
+    }
+    100% {
+      transform: scale(4.2);
+      opacity: 0;
+    }
+  }
+  .radial-ping-btn,
+  .radial-ping-cancel {
+    cursor: pointer;
+    transition: transform 0.14s ease;
+  }
+  .radial-ping-btn:hover circle {
+    stroke-width: 2.2;
+    filter: brightness(1.18) drop-shadow(0 0 8px rgba(255, 255, 255, 0.35));
   }
 </style>

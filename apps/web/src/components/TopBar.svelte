@@ -8,6 +8,7 @@
     getTerritoryName,
     getContinentName,
     getSubregionName,
+    getObjectiveTitle,
     getObjectiveDescription,
     getFactionDoctrine,
   } from "../i18n/content.svelte";
@@ -92,6 +93,7 @@
     mapMode?: "cartographic" | "geopolitical" | "regional" | "economic";
     cleanMapMode: boolean;
     highlightObjectiveTerritories: boolean;
+    pingMode?: boolean;
     activeRightDrawer?: "cards" | "objective" | "audio" | "market" | null;
     showHudManager?: boolean;
     objectiveProgress: {
@@ -113,6 +115,7 @@
     amIHost?: boolean;
     pauseState?: PauseStateView | null;
     onTogglePause?: () => void;
+    onReopenTutorial?: () => void;
   }
 
   let {
@@ -131,6 +134,7 @@
     mapMode = $bindable(),
     cleanMapMode = $bindable(),
     highlightObjectiveTerritories = $bindable(),
+    pingMode = $bindable(false),
     activeRightDrawer = $bindable(null),
     showHudManager = $bindable(false),
     objectiveProgress,
@@ -147,6 +151,7 @@
     amIHost = false,
     pauseState = null,
     onTogglePause,
+    onReopenTutorial,
   }: Props = $props();
 
   let activeDiplomacyTargetId = $state<string | null>(null);
@@ -263,17 +268,6 @@
         ),
     ),
   );
-
-  let myAircraftTerritoryId = $derived.by(() => {
-    if (!game || !myPlayerId) return null;
-    const found = Object.values(game.territories).find(
-      (t) =>
-        t.ownerId === myPlayerId &&
-        (t.units?.aircraft ?? 0) >= 1 &&
-        t.armies >= 2,
-    );
-    return found?.id ?? null;
-  });
 
   let myEconomyIncome = $derived.by(() => {
     if (!game || !myPlayerId) return null;
@@ -938,20 +932,35 @@
 
           {#if (targetTreatyWithMe?.status === "active" && targetTreatyWithMe.type === "alliance") || inSameCoalitionWithTarget}
             {@const myRes = myPlayerState?.resources ?? { money: 0, steel: 0, oil: 0, gold: 0 }}
-            {@const canSendAid = aidMoney + aidSteel + aidOil + aidGold > 0 && myPlayerState?.doctrineId !== "extermination" && activeDiplomacyTarget.doctrineId !== "extermination"}
+            {@const lendLeaseBlockedByExtermination =
+              myPlayerState?.doctrineId === "extermination" ||
+              activeDiplomacyTarget.doctrineId === "extermination"}
+            {@const canSendAid = aidMoney + aidSteel + aidOil + aidGold > 0 && !lendLeaseBlockedByExtermination}
             {@const destOptions = getCoalitionDestTerritories(activeDiplomacyTarget.id)}
             {@const activeFromTerr = myAircraftTerritories.find((t) => t.id === (coalitionAirFromId || myAircraftTerritoryId)) ?? myAircraftTerritories[0]}
             {@const maxAirTransfer = activeFromTerr ? Math.min(getTerritoryUnits(activeFromTerr).aircraft, Math.max(0, activeFromTerr.armies - 1)) : 0}
             <div class="dossier-section lend-lease-section">
-              <div class="dossier-section-title">
-                <Icon name={inSameCoalitionWithTarget ? "swords" : "handshake"} size={12} />
-                <span>
-                  {inSameCoalitionWithTarget
-                    ? "Mercado de Coalizão (Lend-Lease & Aeronaves)"
-                    : "Mercado de Aliança (Lend-Lease)"}
+              <div class="dossier-section-title lend-lease-header-row">
+                <span class="lend-lease-title-left">
+                  <Icon name={inSameCoalitionWithTarget ? "swords" : "handshake"} size={12} />
+                  <span>
+                    {inSameCoalitionWithTarget
+                      ? "Mercado de Coalizão (Lend-Lease & Aeronaves)"
+                      : "Mercado de Aliança (Lend-Lease)"}
+                  </span>
                 </span>
               </div>
 
+              {#if lendLeaseBlockedByExtermination}
+                <div class="coalition-locked-box">
+                  <Icon name="lock" size={12} />
+                  <span>
+                    {myPlayerState?.doctrineId === "extermination"
+                      ? "Sua Doutrina de Extermínio opera em economia nula (0 0 0 0) e bloqueia envios Lend-Lease."
+                      : "Este aliado opera sob Doutrina de Extermínio (economia nula) e não pode receber suprimentos."}
+                  </span>
+                </div>
+              {:else}
               <div class="market-aid-rows">
                 <div class="market-aid-row">
                   <span>Dinheiro (${myRes.money})</span>
@@ -1001,6 +1010,8 @@
                 <Icon name="coins" size={13} />
                 <span>Enviar Remessa Lend-Lease</span>
               </button>
+
+              {/if}
 
               {#if inSameCoalitionWithTarget}
                 <div class="coalition-air-panel">
@@ -1491,6 +1502,23 @@
 
     <!-- Structured 2-Row Command Deck -->
     <div class="hq-command-grid">
+      {#if onReopenTutorial}
+        <button
+          type="button"
+          class="hud-btn hq-tutorial-dock-btn"
+          onclick={onReopenTutorial}
+          title="Reabrir Manual Tático Interativo da HUD"
+        >
+          <div class="hq-tut-dock-content">
+            <span class="hq-tut-dock-icon">
+              <Icon name="compass" size={14} color="#eab308" />
+            </span>
+            <span class="hq-tut-dock-label">TUTORIAL GUIADO</span>
+          </div>
+          <span class="hq-tut-dock-badge">REABRIR MANUAL</span>
+        </button>
+      {/if}
+
       <div class="hq-primary-row">
         <button
           class="hud-btn hq-deck-btn"
@@ -1513,10 +1541,12 @@
           data-testid="btn-open-objective"
           class:active={activeRightDrawer === "objective"}
           onclick={() => toggleRightDrawer("objective")}
-          title={t("secret_objective_label")}
+          title={myPlayerState?.objective
+            ? `${t("secret_objective_label")}: ${getObjectiveTitle(myPlayerState.objective)}`
+            : t("secret_objective_label")}
         >
           <span class="hq-btn-icon"><Icon name="target" size={14} /></span>
-          <span class="hq-btn-label">Diretriz</span>
+          <span class="hq-btn-label">{t("directive")}</span>
           {#if objectiveProgress}
             <span class="hq-btn-pill">{objectiveProgress.pct}%</span>
           {/if}
@@ -1719,7 +1749,7 @@
           </div>
         </div>
 
-        <!-- Row 3: Clean Vision & Camera Zoom Cluster -->
+        <!-- Row 3: Clean Vision, Tactical Ping & Camera Zoom Cluster -->
         <div class="mode-row camera-row">
           <button
             class="mode-btn clean-mode-tab"
@@ -1729,6 +1759,17 @@
           >
             <Icon name={cleanMapMode ? "eye-off" : "eye"} size={12} />
             <span>{cleanMapMode ? t("mode_clean_active") : t("mode_clean_label")}</span>
+          </button>
+
+          <button
+            class="mode-btn ping-mode-tab"
+            class:active={pingMode}
+            onclick={() => (pingMode = !pingMode)}
+            title={t("comms_ping_mode_title")}
+            data-testid="toggle-ping-mode"
+          >
+            <Icon name="target" size={12} />
+            <span>{pingMode ? t("comms_ping_mode_active") : t("comms_ping_mode_label")}</span>
           </button>
 
           <div class="zoom-cluster">
@@ -1969,13 +2010,19 @@
       <div class="floating-drawer objective-drawer">
         <div class="drawer-header">
           <h4>
-            <Icon name="target" size={15} /> Diretriz Secreta de Alto Comando
+            <Icon name="target" size={15} /> {t("secret_objective_drawer_title")}
           </h4>
           <button
             class="btn-close"
             onclick={() => (activeRightDrawer = null)}
             aria-label={t("close")}><Icon name="close" size={14} /></button
           >
+        </div>
+        <div class="objective-header-title">
+          <span class="objective-type-badge">
+            <Icon name="shield" size={12} />
+            {getObjectiveTitle(myPlayerState.objective)}
+          </span>
         </div>
         <p class="objective-body">
           {getObjectiveDescription(myPlayerState.objective)}
@@ -1998,12 +2045,12 @@
                 </div>
               {/each}
               <div class="progress-bar-header" style="margin-top: 0.75rem; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 0.35rem;">
-                <span>Progresso Total da Operação:</span>
+                <span>{t("operation_total_progress")}:</span>
                 <strong>{objectiveProgress.pct}%</strong>
               </div>
             {:else}
               <div class="progress-bar-header">
-                <span>Progresso da Operação:</span>
+                <span>{t("operation_progress")}:</span>
                 <strong
                   >{objectiveProgress.pct}% ({objectiveProgress.owned}/{objectiveProgress.total})</strong
                 >
@@ -2032,14 +2079,13 @@
               size={13}
             />
             {highlightObjectiveTerritories
-              ? "Ocultar Alvos no Mapa"
-              : "Destacar Alvos no Mapa (Verde / Vermelho)"}
+              ? t("secret_objective_target_hide")
+              : t("secret_objective_target_highlight")}
           </button>
         </div>
 
         <small class="objective-note">
-          Documento confidencial mascarado no servidor. O cumprimento garante
-          vitória imediata.
+          {t("secret_objective_note")}
         </small>
       </div>
     {/if}
@@ -4201,6 +4247,64 @@
     min-width: 0;
     width: 100%;
   }
+  .hq-tutorial-dock-btn {
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.36rem 0.65rem;
+    background: linear-gradient(
+      90deg,
+      rgba(234, 179, 8, 0.16) 0%,
+      rgba(20, 30, 52, 0.95) 100%
+    );
+    border: 1px solid rgba(234, 179, 8, 0.45);
+    border-radius: 6px;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 0 10px rgba(234, 179, 8, 0.12);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .hq-tutorial-dock-btn:hover {
+    background: linear-gradient(
+      90deg,
+      rgba(234, 179, 8, 0.28) 0%,
+      rgba(20, 30, 52, 0.98) 100%
+    );
+    border-color: #fde047;
+    box-shadow: 0 0 14px rgba(234, 179, 8, 0.32);
+    transform: translateY(-1px);
+  }
+  .hq-tut-dock-content {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+  }
+  .hq-tut-dock-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    background: rgba(234, 179, 8, 0.2);
+    border: 1px solid rgba(234, 179, 8, 0.4);
+  }
+  .hq-tut-dock-label {
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    color: #fef08a;
+  }
+  .hq-tut-dock-badge {
+    font-size: 0.62rem;
+    font-weight: 800;
+    color: #cbd5e1;
+    background: rgba(0, 0, 0, 0.45);
+    padding: 0.14rem 0.45rem;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    letter-spacing: 0.04em;
+  }
   .hq-primary-row {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -4505,11 +4609,108 @@
     border-color: rgba(250, 204, 21, 0.65);
     color: #fef08a;
   }
+  .lend-lease-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.4rem;
+  }
+  .lend-lease-title-left {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+  .lend-lease-scale-pills {
+    display: inline-flex;
+    gap: 0.25rem;
+  }
+  .scale-pill {
+    padding: 0.12rem 0.42rem;
+    font-size: 0.65rem;
+    font-weight: 800;
+    font-family: var(--font-mono);
+    border-radius: 4px;
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    background: rgba(15, 23, 42, 0.85);
+    color: #94a3b8;
+    cursor: pointer;
+  }
+  .scale-pill.active {
+    background: rgba(16, 185, 129, 0.22);
+    border-color: rgba(52, 211, 153, 0.65);
+    color: #6ee7b7;
+  }
   .lend-lease-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.35rem;
     margin-bottom: 0.4rem;
+  }
+  .coalition-aircraft-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-top: 0.4rem;
+    padding-top: 0.45rem;
+    border-top: 1px solid rgba(56, 189, 248, 0.2);
+  }
+  .coalition-aircraft-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.35rem;
+  }
+  .aircraft-select-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.18rem;
+  }
+  .aircraft-select-group span {
+    font-size: 0.62rem;
+    font-weight: 700;
+    color: #94a3b8;
+    text-transform: uppercase;
+  }
+  .aircraft-select-group select {
+    width: 100%;
+    background: rgba(5, 9, 18, 0.92);
+    color: #e2e8f0;
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    border-radius: 5px;
+    padding: 0.28rem 0.35rem;
+    font-size: 0.7rem;
+  }
+  .coalition-aircraft-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+  .aircraft-qty-stepper {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid rgba(56, 189, 248, 0.4);
+    border-radius: 6px;
+    background: rgba(5, 9, 18, 0.9);
+    overflow: hidden;
+  }
+  .aircraft-qty-stepper button {
+    padding: 0.34rem 0.5rem;
+    background: transparent;
+    border: 0;
+    color: #7dd3fc;
+    font-weight: 800;
+    cursor: pointer;
+  }
+  .aircraft-qty-stepper button:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+  .aircraft-qty-stepper span {
+    min-width: 1.4rem;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 800;
+    color: #f8fafc;
   }
   .btn-lend-lease,
   .btn-coalition-aircraft {
@@ -4528,7 +4729,7 @@
     cursor: pointer;
   }
   .btn-coalition-aircraft {
-    width: 100%;
+    flex: 1;
     border-color: rgba(56, 189, 248, 0.6);
     background: rgba(14, 116, 144, 0.25);
     color: #7dd3fc;
@@ -4717,10 +4918,16 @@
     color: #fee2e2;
     background: rgba(239, 68, 68, 0.28);
   }
-  .mode-btn.clean-mode-tab {
+  .mode-btn.clean-mode-tab,
+  .mode-btn.ping-mode-tab {
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
+  }
+  .mode-btn.ping-mode-tab.active {
+    border-color: #38bdf8;
+    color: #e0f2fe;
+    background: rgba(14, 165, 233, 0.24);
   }
   .zoom-cluster {
     display: inline-flex;
@@ -4913,6 +5120,24 @@
   /* Objective Drawer */
   .objective-drawer {
     width: 320px;
+  }
+  .objective-header-title {
+    margin: 0.35rem 0 0.5rem 0;
+  }
+  .objective-type-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.12);
+    border: 1px solid rgba(251, 191, 36, 0.3);
+    border-radius: 4px;
+    padding: 0.25rem 0.55rem;
+    text-transform: uppercase;
+    box-shadow: 0 0 8px rgba(251, 191, 36, 0.15);
   }
   .objective-body {
     margin: 0;
