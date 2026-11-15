@@ -264,5 +264,27 @@ describe("Hegemonia v0.6.2 Features", () => {
       }
       void state;
     });
+
+    it("starts extermination doctrine with 50% infamy and handles leave_coalition penalty (HEGEM-169, 170)", () => {
+      const rng = createSeededRng("coal-leave");
+      const extermPlayers = [
+        { id: "p1", name: "Exterm", color: "red" as const, doctrineId: "extermination" as const },
+        { id: "p2", name: "Tall", color: "blue" as const, doctrineId: "tall_sovereign" as const },
+        { id: "p3", name: "Blitz", color: "green" as const, doctrineId: "blitzkrieg" as const },
+      ];
+      let state = createGame({ id: "coal-leave", seed: "coal-leave", players: extermPlayers });
+      const p1 = state.players.find((p) => p.id === "p1")!;
+      const p2 = state.players.find((p) => p.id === "p2")!;
+      expect(p1.infamy).toBe(50);
+
+      // Form and leave coalition while target p1 is alive -> +30% infamy
+      state.turnIndex = state.players.findIndex((p) => p.id === "p2");
+      state = applyAction(state, "p2", { type: "form_coalition", targetPlayerId: "p1" }, rng);
+      const coalId = state.coalitions[0].id;
+      state = applyAction(state, "p2", { type: "leave_coalition", coalitionId: coalId }, rng);
+      expect(state.players.find((p) => p.id === "p2")!.infamy).toBe(30);
+      expect(state.coalitions.length).toBe(0);
+      void p2;
+    });
   });
 });

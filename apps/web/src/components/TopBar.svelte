@@ -490,6 +490,13 @@
     });
   }
 
+  function handleLeaveCoalition(coalitionId: string) {
+    sendAction({
+      type: "leave_coalition",
+      coalitionId,
+    });
+  }
+
   function handleSendAllianceAid(
     targetPlayerId: string,
     payload: { money?: number; steel?: number; oil?: number; gold?: number },
@@ -888,6 +895,21 @@
                 <div class="coalition-joined-badge">
                   <Icon name="check" size={12} /> Você é membro ativo desta coalizão
                 </div>
+                <button
+                  type="button"
+                  class="btn-treaty-break"
+                  onclick={() => handleLeaveCoalition(activeCoalitionAgainstTarget.id)}
+                  title={activeDiplomacyTarget.eliminated
+                    ? "Sair da coalizão (sem penalidade pois o alvo já foi eliminado)"
+                    : "Abandonar a coalizão antes da eliminação do alvo (+30% Infâmia)"}
+                >
+                  <Icon name="close" size={13} />
+                  <span>
+                    {activeDiplomacyTarget.eliminated
+                      ? "Sair da Coalizão (Alvo Eliminado)"
+                      : "Sair da Coalizão (+30% Infâmia)"}
+                  </span>
+                </button>
               {/if}
             </div>
           {:else if (activeDiplomacyTarget.infamy ?? 0) >= 50}

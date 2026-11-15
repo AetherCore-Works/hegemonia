@@ -906,6 +906,11 @@ export const JoinCoalitionActionSchema = z.object({
   coalitionId: z.string(),
 });
 
+export const LeaveCoalitionActionSchema = z.object({
+  type: z.literal("leave_coalition"),
+  coalitionId: z.string(),
+});
+
 export const ChooseObjectiveActionSchema = z.object({
   type: z.literal("choose_objective"),
   objectiveId: z.string(),
@@ -970,6 +975,7 @@ export const GameActionSchema = z.discriminatedUnion("type", [
   BreakTreatyActionSchema,
   FormCoalitionActionSchema,
   JoinCoalitionActionSchema,
+  LeaveCoalitionActionSchema,
 ]);
 
 export type GameAction = z.infer<typeof GameActionSchema>;

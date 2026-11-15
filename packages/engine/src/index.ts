@@ -1268,7 +1268,7 @@ export function createGame(opts: CreateGameOptions): GameState {
       isCapitalLost: false,
       economicPenaltyMultiplier: 1.0,
       moralePenalty: 0,
-      infamy: 0,
+      infamy: p.doctrineId === "extermination" ? 50 : 0,
       resources: { money: 0, steel: 0, oil: 0, gold: 0 },
       boughtCardWithGoldThisTurn: false,
       analytics: createInitialPlayerAnalytics(),
@@ -4208,6 +4208,33 @@ export function applyAction(
       break;
     }
 
+    case "leave_coalition": {
+      state.coalitions = state.coalitions ?? [];
+      const cIdx = state.coalitions.findIndex((c) => c.id === action.coalitionId);
+      if (cIdx === -1) throw new Error("Coalizão não encontrada.");
+      const coalition = state.coalitions[cIdx];
+      if (!coalition.memberPlayerIds.includes(playerId)) {
+        throw new Error("Você não faz parte desta coalizão.");
+      }
+      coalition.memberPlayerIds = coalition.memberPlayerIds.filter((id) => id !== playerId);
+      const target = state.players.find((p) => p.id === coalition.targetPlayerId);
+      const targetName = target ? target.name : "inimigo";
+      if (target && !target.eliminated) {
+        actingPlayer.infamy = Math.min(100, (actingPlayer.infamy ?? 0) + 30);
+        state.log.push(
+          `⚠️ DESERÇÃO DE COALIZÃO: ${actingPlayer.name} abandonou a Coalizão contra ${targetName} antes da vitória! (+30% Infâmia)`
+        );
+      } else {
+        state.log.push(
+          `🏳️ ${actingPlayer.name} deixou a Coalizão contra ${targetName} após o cumprimento do objetivo.`
+        );
+      }
+      if (coalition.memberPlayerIds.length === 0) {
+        state.coalitions.splice(cIdx, 1);
+      }
+      break;
+    }
+
     case "send_alliance_aid": {
       if (action.targetPlayerId === playerId) {
         throw new Error("Você não pode enviar remessas de aliança para si mesmo.");
@@ -4429,17 +4456,50 @@ function advanceTurn(state: GameState, rng: SeededRng, map: GameMapDef): void {
 
       const totalTerritories = Object.keys(state.territories).length;
       if (totalTerritories > 0) {
-        for (const p of state.players) {
-          if (!p.eliminated) {
-            const heldCount = Object.values(state.territories).filter(
-              (t) => t.ownerId === p.id
-            ).length;
-            if (heldCount / totalTerritories >= 0.38) {
-              p.infamy = Math.min(100, (p.infamy ?? 0) + 5);
-              state.log.push(
-                `⚠️ HEGEMONIA AMEAÇADORA: ${p.name} controla ${heldCount}/${totalTerritories} territórios (${Math.round((heldCount / totalTerritories) * 100)}%) e gera alarme global! (+5% Infâmia)`
-              );
-            }
+        const livingPlayers = state.players.filter((p) => !p.eliminated);
+        const terrCounts = new Map<string, number>();
+        const armyCounts = new Map<string, number>();
+        let maxTerrs = 0;
+        let maxArmies = 0;
+
+        for (const p of livingPlayers) {
+          const owned = Object.values(state.territories).filter((t) => t.ownerId === p.id);
+          const heldCount = owned.length;
+          const totalArmies = owned.reduce((acc, t) => acc + t.armies, 0);
+          terrCounts.set(p.id, heldCount);
+          armyCounts.set(p.id, totalArmies);
+          if (heldCount > maxTerrs) maxTerrs = heldCount;
+          if (totalArmies > maxArmies) maxArmies = totalArmies;
+
+          if (heldCount / totalTerritories >= 0.38) {
+            p.infamy = Math.min(100, (p.infamy ?? 0) + 5);
+            state.log.push(
+              `⚠️ HEGEMONIA AMEAÇADORA: ${p.name} controla ${heldCount}/${totalTerritories} territórios (${Math.round((heldCount / totalTerritories) * 100)}%) e gera alarme global! (+5% Infâmia)`
+            );
+          }
+        }
+
+        // HEGEM-169: Maior quantidade de territórios e maior exército (exceto Tall) geram infâmia por turno
+        const terrLeaders = livingPlayers.filter((p) => (terrCounts.get(p.id) ?? 0) === maxTerrs && maxTerrs > 0);
+        if (livingPlayers.length >= 2 && terrLeaders.length === 1) {
+          const leader = terrLeaders[0];
+          leader.infamy = Math.min(100, (leader.infamy ?? 0) + 2);
+          state.log.push(
+            `🌐 EXPANSIONISMO LÍDER: ${leader.name} detém o maior número de territórios (${maxTerrs}) e atrai suspeita global (+2% Infâmia).`
+          );
+        }
+
+        const armyLeaders = livingPlayers.filter((p) => (armyCounts.get(p.id) ?? 0) === maxArmies && maxArmies > 0);
+        if (livingPlayers.length >= 2 && armyLeaders.length === 1) {
+          const armyLeader = armyLeaders[0];
+          const isTall =
+            armyLeader.doctrineId === "tall_sovereign" ||
+            armyLeader.doctrineId === "defense_in_depth";
+          if (!isTall) {
+            armyLeader.infamy = Math.min(100, (armyLeader.infamy ?? 0) + 2);
+            state.log.push(
+              `⚔️ SUPERPOTÊNCIA MILITAR: ${armyLeader.name} possui o maior exército do mundo (${maxArmies} div.) e gera alarme internacional (+2% Infâmia).`
+            );
           }
         }
       }

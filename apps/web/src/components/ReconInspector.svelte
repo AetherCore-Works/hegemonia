@@ -8,6 +8,7 @@
     getTerritoryUnits,
     getTerritoryBuildingLevel,
     getTerritoryMaxBuildingSlots,
+    getWonderCost,
     hasTerritoryBuilding,
   } from "@hegemonia/engine";
   import type {
@@ -614,6 +615,34 @@
                       </strong>
                       <strong class="cost-tag steel" class:missing={myRes.steel < 1}>
                         <Icon name="steel" size={11} /> 1
+                      </strong>
+                    </div>
+                  </button>
+                {/if}
+
+                <!-- Doomsday Citadel (Wonder) — HEGEM-168 -->
+                {#if game && myPlayerState && (myPlayerState.objective?.rule.type === "fortified_bastion" || myPlayerState.doctrineId === "tall_sovereign" || myPlayerState.doctrineId === "defense_in_depth") && hasTerritoryBuilding(inspectedTerritory.state, "fortification") && !Object.values(game.territories).some((t) => t.ownerId === myPlayerId && hasTerritoryBuilding(t, "wonder"))}
+                  {@const wCost = getWonderCost(game, myPlayerId!)}
+                  <button
+                    type="button"
+                    class="btn-build-option wonder-opt"
+                    disabled={bldgs.length >= maxSlots || myRes.money < wCost.money || myRes.steel < wCost.steel}
+                    onclick={() => handleBuildStructure(inspectedTerritory!.def.id, "wonder")}
+                    title="Constrói a Cidadela do Dia Final (+1 dado de defesa na obra; 6 rodadas após concluída para vitória mundial)"
+                  >
+                    <div class="build-opt-icon wonder">
+                      <Icon name="capital" size={18} />
+                    </div>
+                    <div class="build-opt-copy">
+                      <span class="build-opt-title">Cidadela do Dia Final</span>
+                      <small class="build-opt-sub">Maravilha (+1 Def na obra • Vitória 6t)</small>
+                    </div>
+                    <div class="build-opt-costs">
+                      <strong class="cost-tag money" class:missing={myRes.money < wCost.money}>
+                        <Icon name="coins" size={11} /> ${wCost.money}
+                      </strong>
+                      <strong class="cost-tag steel" class:missing={myRes.steel < wCost.steel}>
+                        <Icon name="steel" size={11} /> {wCost.steel}
                       </strong>
                     </div>
                   </button>

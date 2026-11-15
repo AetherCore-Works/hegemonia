@@ -655,7 +655,8 @@ describe("Diplomacy, Treaties, World Tension and Coalitions", () => {
     // Round advanced to 2
     expect(state.round).toBe(2);
     expect(state.worldTension).toBe(1.5);
-    expect(state.players[0].infamy).toBe(5);
+    // +5% (>=38% hegemonia) + 2% (líder de territórios) + 2% (maior exército não-Tall)
+    expect(state.players[0].infamy).toBe(9);
   });
 });
 
