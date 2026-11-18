@@ -196,4 +196,51 @@ describe("Map Preferences & Overlays (HEGEM-62)", () => {
     expect(flagSource).toContain("#cbd5e1");
     expect(flagSource).toContain("#F0F0F5");
   });
+
+  it("supports Supremacy 2.5D tactical base mode in preferences and TacticalMap visual layers", () => {
+    const parsed = parseMapPreferences(
+      JSON.stringify({
+        base: "supremacy",
+        overlays: { regional: false, economic: true },
+        autoCameraFocus: true,
+      })
+    );
+    expect(parsed).toEqual({
+      base: "supremacy",
+      overlays: { regional: false, economic: true },
+      autoCameraFocus: true,
+    });
+
+    expect(migrateLegacyMapMode("supremacy")).toEqual({
+      base: "supremacy",
+      overlays: { regional: false, economic: false },
+      autoCameraFocus: true,
+    });
+
+    saveMapPreferences({
+      base: "supremacy",
+      overlays: { regional: true, economic: false },
+      autoCameraFocus: true,
+    });
+    expect(loadMapPreferences().base).toBe("supremacy");
+
+    const tacticalMapPath = path.resolve(
+      import.meta.dirname,
+      "../components/TacticalMap.svelte"
+    );
+    const tmSource = fs.readFileSync(tacticalMapPath, "utf8");
+    expect(tmSource).toContain('class="layer-supremacy-elevation"');
+    expect(tmSource).toContain('class="layer-supremacy-supply-lines"');
+    expect(tmSource).toContain('class="layer-supremacy-borders"');
+    expect(tmSource).toContain("supremacy-empire-mask-");
+
+    const elevationIdx = tmSource.indexOf('class="layer-supremacy-elevation"');
+    const polygonsIdx = tmSource.indexOf('class="layer-territory-polygons"');
+    const bordersIdx = tmSource.indexOf('class="layer-supremacy-borders"');
+    const badgesIdx = tmSource.indexOf('class="layer-territory-badges"');
+    expect(elevationIdx).toBeGreaterThan(-1);
+    expect(elevationIdx).toBeLessThan(polygonsIdx);
+    expect(bordersIdx).toBeGreaterThan(polygonsIdx);
+    expect(bordersIdx).toBeLessThan(badgesIdx);
+  });
 });

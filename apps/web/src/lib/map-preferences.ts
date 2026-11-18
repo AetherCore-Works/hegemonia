@@ -1,4 +1,6 @@
-export type BaseMapMode = "cartographic" | "geopolitical";
+export type BaseMapMode = "cartographic" | "geopolitical" | "supremacy";
+
+export type SupremacyAnglePreset = "left" | "center" | "right";
 
 export interface MapOverlays {
   regional: boolean;
@@ -30,7 +32,11 @@ export function parseMapPreferences(raw: string | null): MapPreferences | null {
     if (!parsed || typeof parsed !== "object") return null;
 
     const base: BaseMapMode =
-      parsed.base === "geopolitical" ? "geopolitical" : "cartographic";
+      parsed.base === "geopolitical"
+        ? "geopolitical"
+        : parsed.base === "supremacy"
+          ? "supremacy"
+          : "cartographic";
 
     const overlays: MapOverlays = {
       regional: Boolean(parsed.overlays?.regional),
@@ -54,6 +60,8 @@ export function migrateLegacyMapMode(legacyValue: string | null): MapPreferences
       return { base: "cartographic", overlays: { regional: true, economic: false }, autoCameraFocus: true };
     case "economic":
       return { base: "cartographic", overlays: { regional: false, economic: true }, autoCameraFocus: true };
+    case "supremacy":
+      return { base: "supremacy", overlays: { regional: false, economic: false }, autoCameraFocus: true };
     case "cartographic":
       return { base: "cartographic", overlays: { regional: false, economic: false }, autoCameraFocus: true };
     default:

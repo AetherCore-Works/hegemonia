@@ -179,7 +179,7 @@ export const enGame: TranslationCatalog = {
   audio_track_custom: "Custom Track (track1.mp3)",
   inspect_map: "Inspect Map",
   inspect_map_title: "Collapse to inspect tactical map",
-  hints_nav: "WASD / Arrows: Pan • Q / E / Scroll: Zoom • F1-F3: Map Modes • H: Immersive HUD",
+  hints_nav: "WASD / Arrows: Pan • Q / E / Scroll: Zoom • 1-5 / V: Map Modes • Shift+Drag: Tilt 2.5D • H: Immersive HUD",
   directive: "Directive",
   secret_objective_label: "High Command Secret Directive",
   secret_objective_drawer_title: "High Command Secret Directive",
