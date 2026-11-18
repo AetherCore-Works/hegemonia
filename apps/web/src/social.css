@@ -115,9 +115,12 @@
 .topbar-audio-btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 7px;
-  padding: 7px 12px;
-  border-radius: 5px;
+  height: 42px;
+  box-sizing: border-box;
+  padding: 0 14px;
+  border-radius: 6px;
   background: rgba(12, 20, 36, 0.9);
   border: 1px solid rgba(148, 163, 184, 0.25);
   color: #cbd5e1;
@@ -126,6 +129,7 @@
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+  flex-shrink: 0;
 }
 .topbar-audio-btn.playing {
   border-color: rgba(234, 179, 8, 0.55);
@@ -197,12 +201,14 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  height: 42px;
+  box-sizing: border-box;
   color: #f1f5f9;
   background: linear-gradient(145deg, rgba(17, 28, 48, 0.95), rgba(9, 15, 28, 0.95));
   border: 1px solid rgba(212, 175, 55, 0.42);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
-  padding: 5px 12px 5px 6px;
-  border-radius: 5px;
+  padding: 3px 12px 3px 4px;
+  border-radius: 6px;
 }
 .account-trigger:hover:not(:disabled) {
   border-color: #eab308;

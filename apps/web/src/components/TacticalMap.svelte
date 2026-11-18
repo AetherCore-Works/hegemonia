@@ -41,7 +41,16 @@
     getContinentName,
     getSubregionName,
   } from "../i18n/content.svelte";
-  import type { BaseMapMode, MapOverlays } from "../lib/map-preferences.js";
+  import type { BaseMapMode, MapOverlays, SupremacyAnglePreset } from "../lib/map-preferences.js";
+  import {
+    SUPREMACY_ANGLE_PRESETS,
+    buildSupremacyStageTransform,
+    clampSupremacyPitch,
+    clampSupremacyRoll,
+    computeSvgSliceScale,
+    screenToMapPlane,
+    type PerspectiveCameraConfig,
+  } from "../lib/map-perspective.js";
   import type { IconName } from "../lib/icons.js";
   import {
     resolveShortestMapVector,
@@ -52,6 +61,8 @@
     game,
     myPlayerId,
     baseMapMode = "cartographic",
+    supremacyAngle = $bindable<SupremacyAnglePreset>("right"),
+    supremacyResetSignal = 0,
     overlays = { regional: false, economic: false },
     mapMode,
     cleanMapMode = false,
@@ -74,6 +85,8 @@
     game: GameState;
     myPlayerId: string | null;
     baseMapMode?: BaseMapMode;
+    supremacyAngle?: SupremacyAnglePreset;
+    supremacyResetSignal?: number;
     overlays?: MapOverlays;
     mapMode?: "cartographic" | "geopolitical" | "regional" | "economic";
     cleanMapMode?: boolean;
@@ -152,9 +165,78 @@
     baseMapMode ?? (mapMode === "geopolitical" ? "geopolitical" : "cartographic")
   );
 
+  const isSupremacyMode = $derived(effectiveBaseMode === "supremacy");
+
   const effectiveOverlays = $derived<MapOverlays>({
     regional: overlays?.regional ?? (mapMode === "regional"),
     economic: overlays?.economic ?? (mapMode === "economic"),
+  });
+
+  // Deduplicated land adjacency network for Supremacy WW3 tactical supply lines
+  const SEA_LINK_SET = new Set<string>([
+    ...DIRECT_SEA_LINKS.map(([a, b]) => (a < b ? `${a}|${b}` : `${b}|${a}`)),
+    ...PACIFIC_WRAP_LINKS.map(([a, b]) => (a < b ? `${a}|${b}` : `${b}|${a}`)),
+  ]);
+  const LAND_SUPPLY_LINKS: [string, string][] = [];
+  {
+    const seenLinks = new Set<string>();
+    for (const terr of CLASSIC_MAP.territories) {
+      for (const neighborId of terr.neighbors) {
+        const key = terr.id < neighborId ? `${terr.id}|${neighborId}` : `${neighborId}|${terr.id}`;
+        if (seenLinks.has(key) || SEA_LINK_SET.has(key)) continue;
+        seenLinks.add(key);
+        LAND_SUPPLY_LINKS.push([terr.id, neighborId]);
+      }
+    }
+  }
+
+  let mapViewportEl = $state<HTMLDivElement | null>(null);
+  let pitchOffsetDeg = $state(0);
+  let rollOffsetDeg = $state(0);
+
+  $effect(() => {
+    // Reset manual tilt adjustment when switching presets or hitting camera RST
+    void supremacyAngle;
+    void supremacyResetSignal;
+    pitchOffsetDeg = 0;
+    rollOffsetDeg = 0;
+  });
+
+  $effect(() => {
+    // Clamp zoom comfortably inside wrapped canvas coverage when entering 2.5D mode
+    if (isSupremacyMode && zoom < 0.9) {
+      zoom = 1.0;
+    }
+  });
+
+  const supremacyCamera = $derived<PerspectiveCameraConfig>({
+    ...SUPREMACY_ANGLE_PRESETS[supremacyAngle],
+    pitchDeg: clampSupremacyPitch(SUPREMACY_ANGLE_PRESETS[supremacyAngle].pitchDeg + pitchOffsetDeg),
+    rollDeg: clampSupremacyRoll(SUPREMACY_ANGLE_PRESETS[supremacyAngle].rollDeg + rollOffsetDeg),
+  });
+
+  const supremacyStageTransform = $derived(
+    isSupremacyMode ? buildSupremacyStageTransform(supremacyCamera) : "none"
+  );
+
+  // Oversized 1.9x bleed viewBox in 2.5D mode guarantees zero clipped viewport corners under perspective pitch
+  const svgViewBox = $derived(
+    isSupremacyMode
+      ? `${-MAP_WIDTH * 0.45} ${-MAP_HEIGHT * 0.45} ${MAP_WIDTH * 1.9} ${MAP_HEIGHT * 1.9}`
+      : `0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`
+  );
+
+  const playerTerritoryGroups = $derived.by(() => {
+    if (!isSupremacyMode) return [];
+    return game.players
+      .map((player) => ({
+        player,
+        isMe: player.id === myPlayerId,
+        territories: CLASSIC_MAP.territories.filter(
+          (terr) => game.territories[terr.id]?.ownerId === player.id
+        ),
+      }))
+      .filter((group) => group.territories.length > 0);
   });
 
   const COLOR_HEX: Record<PlayerColor, string> = {
@@ -464,30 +546,63 @@
       : new Set<string>()
   );
 
-  // --- Mouse Drag, Touch Pan (Tablet) & Wheel Camera Controls ---
+  // --- Mouse Drag, Touch Pan (Tablet), Shift-Tilt (2.5D) & Wheel Camera Controls ---
   let isDragging = $state(false);
   let lastMouseX = $state(0);
   let lastMouseY = $state(0);
+  let dragMovedPx = $state(0);
+
+  function applyPanDelta(prevX: number, prevY: number, currX: number, currY: number, shiftKey = false) {
+    const rawDx = currX - prevX;
+    const rawDy = currY - prevY;
+    dragMovedPx += Math.hypot(rawDx, rawDy);
+
+    if (isSupremacyMode && shiftKey) {
+      rollOffsetDeg = clampSupremacyRoll(rollOffsetDeg + rawDx * 0.08);
+      const basePitch = SUPREMACY_ANGLE_PRESETS[supremacyAngle].pitchDeg;
+      const nextPitch = clampSupremacyPitch(basePitch + pitchOffsetDeg - rawDy * 0.08);
+      pitchOffsetDeg = nextPitch - basePitch;
+      return;
+    }
+
+    let dxPlane = rawDx;
+    let dyPlane = rawDy;
+
+    const rect = mapViewportEl?.getBoundingClientRect();
+    if (isSupremacyMode && rect) {
+      const p1 = screenToMapPlane(prevX, prevY, rect, supremacyCamera);
+      const p2 = screenToMapPlane(currX, currY, rect, supremacyCamera);
+      if (p1 && p2) {
+        dxPlane = p2.x - p1.x;
+        dyPlane = p2.y - p1.y;
+      }
+    }
+
+    const svgScale = rect
+      ? computeSvgSliceScale(rect.width, rect.height, MAP_WIDTH, MAP_HEIGHT)
+      : MAP_WIDTH / Math.max(window.innerWidth, 320);
+
+    camX = wrapCamX(camX + (dxPlane * svgScale) / zoom);
+    camY = clampCamY(camY + (dyPlane * svgScale) / zoom);
+  }
 
   function onMouseDown(e: MouseEvent) {
     if (e.button !== 0 && e.button !== 1) return;
     const target = e.target as Element;
     if (target.closest(".hud-panel") || target.closest(".war-journal-panel")) return;
     isDragging = true;
+    dragMovedPx = 0;
     lastMouseX = e.clientX;
     lastMouseY = e.clientY;
   }
 
   function onMouseMove(e: MouseEvent) {
     if (!isDragging) return;
-    const dxPx = e.clientX - lastMouseX;
-    const dyPx = e.clientY - lastMouseY;
+    const prevX = lastMouseX;
+    const prevY = lastMouseY;
     lastMouseX = e.clientX;
     lastMouseY = e.clientY;
-
-    const svgScale = MAP_WIDTH / Math.max(window.innerWidth, 320);
-    camX = wrapCamX(camX + (dxPx * svgScale) / zoom);
-    camY = clampCamY(camY + (dyPx * svgScale) / zoom);
+    applyPanDelta(prevX, prevY, e.clientX, e.clientY, e.shiftKey);
   }
 
   function onMouseUp() {
@@ -499,20 +614,20 @@
     const target = e.target as Element;
     if (target.closest(".hud-panel") || target.closest(".war-journal-panel")) return;
     isDragging = true;
+    dragMovedPx = 0;
     lastMouseX = e.touches[0].clientX;
     lastMouseY = e.touches[0].clientY;
   }
 
   function onTouchMove(e: TouchEvent) {
     if (!isDragging || e.touches.length !== 1) return;
-    const dxPx = e.touches[0].clientX - lastMouseX;
-    const dyPx = e.touches[0].clientY - lastMouseY;
-    lastMouseX = e.touches[0].clientX;
-    lastMouseY = e.touches[0].clientY;
-
-    const svgScale = MAP_WIDTH / Math.max(window.innerWidth, 320);
-    camX = wrapCamX(camX + (dxPx * svgScale) / zoom);
-    camY = clampCamY(camY + (dyPx * svgScale) / zoom);
+    const prevX = lastMouseX;
+    const prevY = lastMouseY;
+    const currX = e.touches[0].clientX;
+    const currY = e.touches[0].clientY;
+    lastMouseX = currX;
+    lastMouseY = currY;
+    applyPanDelta(prevX, prevY, currX, currY, false);
   }
 
   function onTouchEnd() {
@@ -522,7 +637,8 @@
   function onWheel(e: WheelEvent) {
     e.preventDefault();
     const zoomFactor = e.deltaY < 0 ? 1.14 : 0.88;
-    zoom = Math.max(0.75, Math.min(4.5, zoom * zoomFactor));
+    const minZoom = isSupremacyMode ? 0.9 : 0.75;
+    zoom = Math.max(minZoom, Math.min(4.5, zoom * zoomFactor));
   }
 </script>
 
@@ -532,9 +648,10 @@
   ontouchend={onTouchEnd}
 />
 
-<!-- FULLSCREEN CONTINUOUS WRAPAROUND GEOPOLITICAL & CARTOGRAPHIC MAP -->
+<!-- FULLSCREEN CONTINUOUS WRAPAROUND GEOPOLITICAL, CARTOGRAPHIC & SUPREMACY 2.5D MAP -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
+  bind:this={mapViewportEl}
   class="map-viewport"
   onwheel={onWheel}
   onmousedown={onMouseDown}
@@ -617,10 +734,24 @@
     </aside>
   {/if}
 
+  <div
+    class="map-perspective-host"
+    class:supremacy-viewport={isSupremacyMode}
+    style={isSupremacyMode
+      ? `--supremacy-persp: ${supremacyCamera.perspectivePx}px; --supremacy-origin-y: ${supremacyCamera.originYRatio * 100}%;`
+      : undefined}
+  >
+  <div
+    class="map-stage"
+    class:is-supremacy={isSupremacyMode}
+    class:is-dragging={isDragging}
+    style={isSupremacyMode ? `transform: ${supremacyStageTransform};` : undefined}
+  >
   <svg
-    viewBox="0 0 {MAP_WIDTH} {MAP_HEIGHT}"
+    viewBox={svgViewBox}
     preserveAspectRatio="xMidYMid slice"
     class="world-svg"
+    class:supremacy-bleed={isSupremacyMode}
   >
     <defs>
       <!-- Tactical Grid Overlay -->
@@ -628,10 +759,47 @@
         <path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(30, 41, 59, 0.35)" stroke-width="0.6" />
       </pattern>
 
+      <!-- Supremacy WW3 Naval Chart Mesh Pattern -->
+      <pattern id="supremacy-ocean-grid" width="28" height="28" patternUnits="userSpaceOnUse">
+        <path d="M 28 0 L 0 0 0 28" fill="none" stroke="rgba(56, 132, 184, 0.16)" stroke-width="0.45" />
+        <path d="M 14 0 L 14 28 M 0 14 L 28 14" fill="none" stroke="rgba(56, 132, 184, 0.06)" stroke-width="0.3" />
+      </pattern>
+
+      <!-- Seamless Top/Bottom Ocean Horizon Blends around Satellite Raster -->
+      <linearGradient id="supremacy-edge-top" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#0b1c2e" stop-opacity="1" />
+        <stop offset="100%" stop-color="#0b1c2e" stop-opacity="0" />
+      </linearGradient>
+      <linearGradient id="supremacy-edge-bottom" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#0b1c2e" stop-opacity="0" />
+        <stop offset="100%" stop-color="#0b1c2e" stop-opacity="1" />
+      </linearGradient>
+
       <!-- Cartographic Topographic Relief Hatching Pattern -->
       <pattern id="topo-relief" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(35)">
         <line x1="0" y1="0" x2="0" y2="8" stroke="rgba(15, 23, 42, 0.32)" stroke-width="1.4" />
       </pattern>
+
+      <!-- Pure-Vector Empire Outer-Border Masks for Supremacy WW3 National Frontiers -->
+      {#if isSupremacyMode}
+        {#each [-MAP_WIDTH, 0, MAP_WIDTH] as offsetX (offsetX)}
+          {#each playerTerritoryGroups as group (group.player.id)}
+            <mask
+              id={`supremacy-empire-mask-${offsetX}-${group.player.id}`}
+              maskUnits="userSpaceOnUse"
+              x="-24"
+              y="-24"
+              width={MAP_WIDTH + 48}
+              height={MAP_HEIGHT + 48}
+            >
+              <rect x="-24" y="-24" width={MAP_WIDTH + 48} height={MAP_HEIGHT + 48} fill="#ffffff" />
+              {#each group.territories as ot (ot.id)}
+                <path d={ot.svgPath} fill="#000000" />
+              {/each}
+            </mask>
+          {/each}
+        {/each}
+      {/if}
 
       <!-- Selection & Target Glow -->
       <filter id="glow-gold" x="-20%" y="-20%" width="140%" height="140%">
@@ -673,20 +841,20 @@
         y={-MAP_HEIGHT}
         width={MAP_WIDTH * 5}
         height={MAP_HEIGHT * 3}
-        fill={effectiveBaseMode === "cartographic" ? "#061121" : "#08172e"}
+        fill={isSupremacyMode ? "#0b1c2e" : effectiveBaseMode === "cartographic" ? "#061121" : "#08172e"}
       />
       <rect
         x={-MAP_WIDTH * 2}
         y={-MAP_HEIGHT}
         width={MAP_WIDTH * 5}
         height={MAP_HEIGHT * 3}
-        fill="url(#tactical-grid)"
+        fill={isSupremacyMode ? "url(#supremacy-ocean-grid)" : "url(#tactical-grid)"}
       />
 
       <!-- LAYER 1: 3 HORIZONTAL WORLD COPIES (-1200, 0, +1200) BASE RELIEF & SEA ROUTES -->
       {#each [-MAP_WIDTH, 0, MAP_WIDTH] as offsetX (offsetX)}
         <g class="world-copy" transform="translate({offsetX}, 0)">
-          {#if effectiveBaseMode === "cartographic"}
+          {#if effectiveBaseMode === "cartographic" || isSupremacyMode}
             <!-- NASA Blue Marble Topography + Ocean Bathymetry Satellite Raster Layer (Exact Equirectangular Match: x=0..1200, y=20..620) -->
             <image
               href="/maps/world-relief.jpg"
@@ -695,14 +863,20 @@
               width={MAP_WIDTH}
               height="600"
               preserveAspectRatio="none"
-              opacity="0.94"
+              opacity={isSupremacyMode ? "0.92" : "0.94"}
+              style={isSupremacyMode ? "filter: contrast(1.18) brightness(0.84) saturate(0.76);" : undefined}
               pointer-events="none"
             />
+            {#if isSupremacyMode}
+              <!-- Soft ocean feathering along polar edges for seamless 2.5D depth horizon -->
+              <rect x="0" y="20" width={MAP_WIDTH} height="40" fill="url(#supremacy-edge-top)" pointer-events="none" />
+              <rect x="0" y="580" width={MAP_WIDTH} height="40" fill="url(#supremacy-edge-bottom)" pointer-events="none" />
+            {/if}
             <!-- Latitude / Longitude Graticule Lines -->
             <path
               d={GRATICULE_SVG_PATH}
               fill="none"
-              stroke="rgba(186, 230, 253, 0.13)"
+              stroke={isSupremacyMode ? "rgba(148, 197, 235, 0.08)" : "rgba(186, 230, 253, 0.13)"}
               stroke-width="0.5"
               pointer-events="none"
             />
@@ -732,11 +906,13 @@
               y2={tb.center[1]}
               stroke={seaBlockaded
                 ? "#ef4444"
-                : effectiveBaseMode === "cartographic"
-                  ? "rgba(224, 242, 254, 0.65)"
-                  : "#64748b"}
-              stroke-dasharray={seaBlockaded ? "4,2.5" : "3.5,4"}
-              stroke-width={seaBlockaded ? "2.1" : "1.35"}
+                : isSupremacyMode
+                  ? "rgba(148, 210, 240, 0.48)"
+                  : effectiveBaseMode === "cartographic"
+                    ? "rgba(224, 242, 254, 0.65)"
+                    : "#64748b"}
+              stroke-dasharray={seaBlockaded ? "4,2.5" : isSupremacyMode ? "2.5,3.5" : "3.5,4"}
+              stroke-width={seaBlockaded ? "2.1" : isSupremacyMode ? "1.1" : "1.35"}
               pointer-events="none"
             />
           {/each}
@@ -751,9 +927,13 @@
               y1={tw.center[1]}
               x2={te.center[0] - MAP_WIDTH}
               y2={te.center[1]}
-              stroke={effectiveBaseMode === "cartographic" ? "rgba(224, 242, 254, 0.72)" : "#94a3b8"}
-              stroke-dasharray="4,4"
-              stroke-width="1.5"
+              stroke={isSupremacyMode
+                ? "rgba(148, 210, 240, 0.52)"
+                : effectiveBaseMode === "cartographic"
+                  ? "rgba(224, 242, 254, 0.72)"
+                  : "#94a3b8"}
+              stroke-dasharray={isSupremacyMode ? "2.5,3.5" : "4,4"}
+              stroke-width={isSupremacyMode ? "1.15" : "1.5"}
               pointer-events="none"
             />
           {/each}
@@ -764,6 +944,26 @@
       <!-- LAYER 2..5: STRICT Z-INDEX HIERARCHY PER WORLD COPY (HEGEM-77 & HEGEM-81) -->
       {#each [-MAP_WIDTH, 0, MAP_WIDTH] as offsetX (offsetX)}
         <g class="world-copy" transform="translate({offsetX}, 0)">
+          {#if isSupremacyMode}
+            <!-- 2.5D Sculpted Continental Elevation Shadow & Shallow Coastal Shelf Rim -->
+            <g class="layer-supremacy-elevation" pointer-events="none">
+              {#each CLASSIC_MAP.territories as t (t.id)}
+                <path
+                  d={t.svgPath}
+                  fill="none"
+                  stroke="rgba(56, 160, 210, 0.22)"
+                  stroke-width="6.5"
+                  stroke-linejoin="round"
+                />
+              {/each}
+              <g transform="translate(2.4, 4.4)">
+                {#each CLASSIC_MAP.territories as t (t.id)}
+                  <path d={t.svgPath} fill="#020812" fill-opacity="0.72" stroke="none" />
+                {/each}
+              </g>
+            </g>
+          {/if}
+
           <!-- PASS A (Layers 2 & 3): Political Polygons, Regional Illuminated Borders & Economic Ambient Glow -->
           <g class="layer-territory-polygons">
             {#each CLASSIC_MAP.territories as t (t.id)}
@@ -827,6 +1027,10 @@
                 data-territory-id={t.id}
                 data-primary-globe={offsetX === 0 ? "true" : undefined}
                 onclick={(e) => {
+                  if (dragMovedPx > 8) {
+                    dragMovedPx = 0;
+                    return;
+                  }
                   if (onSendTacticalPing && (e.altKey || pingMode)) {
                     e.stopPropagation();
                     pendingPingTerritoryId = pendingPingTerritoryId === t.id ? null : t.id;
@@ -862,12 +1066,18 @@
                     : isObjTarget
                       ? "0.85"
                       : isSelected
-                        ? "0.88"
-                        : effectiveBaseMode === "cartographic"
-                          ? "0.42"
-                          : isBlackTerritory
-                            ? "0.96"
-                            : "0.88"}
+                        ? "0.86"
+                        : isSupremacyMode
+                          ? (isBlackTerritory
+                              ? "0.64"
+                              : tState.ownerId === myPlayerId
+                                ? "0.52"
+                                : "0.46")
+                          : effectiveBaseMode === "cartographic"
+                            ? "0.42"
+                            : isBlackTerritory
+                              ? "0.96"
+                              : "0.88"}
                   stroke={isPreviewTarget
                     ? "#facc15"
                     : isSelected
@@ -884,11 +1094,13 @@
                               ? "#ef4444"
                               : isObjOwned
                                 ? "#10b981"
-                                : effectiveBaseMode === "cartographic"
-                                  ? ownerColor
-                                  : isBlackTerritory
-                                    ? "#CBD5E1"
-                                    : "rgba(9, 13, 22, 0.95)"}
+                                : isSupremacyMode
+                                  ? (isBlackTerritory ? "#94a3b8" : "rgba(8, 15, 28, 0.58)")
+                                  : effectiveBaseMode === "cartographic"
+                                    ? ownerColor
+                                    : isBlackTerritory
+                                      ? "#CBD5E1"
+                                      : "rgba(9, 13, 22, 0.95)"}
                   stroke-width={isPreviewTarget
                     ? "2.8"
                     : isSelected
@@ -903,9 +1115,11 @@
                             ? "2.4"
                             : isObjOwned
                               ? "2.0"
-                              : effectiveBaseMode === "cartographic"
-                                ? "1.6"
-                                : "1.25"}
+                              : isSupremacyMode
+                                ? "0.75"
+                                : effectiveBaseMode === "cartographic"
+                                  ? "1.6"
+                                  : "1.25"}
                   stroke-dasharray={isAirfieldManeuverTarget ? "5,3" : isEligibleManeuverOrigin ? "4,3" : "none"}
                   stroke-linejoin="round"
                   filter={isPreviewTarget || isSelected || isValidTarget
@@ -917,6 +1131,17 @@
                         : undefined}
                   style={isObjDimmed ? "opacity: 0.25; transition: opacity 0.25s ease;" : "transition: opacity 0.25s ease;"}
                 />
+
+                {#if isSupremacyMode}
+                  <!-- Subtle Topographic Contour Texture Inside Territories -->
+                  <path
+                    d={t.svgPath}
+                    fill="url(#topo-relief)"
+                    fill-opacity="0.16"
+                    stroke="none"
+                    pointer-events="none"
+                  />
+                {/if}
 
                 {#if effectiveBaseMode === "cartographic"}
                   <!-- Crisp Dark Inner Frontier Line so Neighboring Same-Color Provinces Remain Distinct Over Satellite Terrain -->
@@ -934,7 +1159,7 @@
                   <path
                     d={t.svgPath}
                     fill={regionColor}
-                    fill-opacity={effectiveBaseMode === "cartographic" ? "0.28" : "0.24"}
+                    fill-opacity={effectiveBaseMode === "cartographic" || isSupremacyMode ? "0.26" : "0.24"}
                     stroke={regionColor}
                     stroke-opacity="0.72"
                     stroke-width="1.35"
@@ -956,6 +1181,61 @@
               </g>
             {/each}
           </g>
+
+          {#if isSupremacyMode}
+            <!-- Strategic Land Supply Network (Roads & Logistics Web) -->
+            <g class="layer-supremacy-supply-lines" pointer-events="none">
+              {#each LAND_SUPPLY_LINKS as [fromId, toId]}
+                {@const ta = territoryById.get(fromId)}
+                {@const tb = territoryById.get(toId)}
+                {#if ta && tb}
+                  <line
+                    x1={ta.center[0]}
+                    y1={ta.center[1]}
+                    x2={tb.center[0]}
+                    y2={tb.center[1]}
+                    stroke="rgba(226, 232, 240, 0.22)"
+                    stroke-width="0.6"
+                    stroke-linecap="round"
+                  />
+                {/if}
+              {/each}
+              {#each CLASSIC_MAP.territories as tNode (tNode.id)}
+                <circle
+                  cx={tNode.center[0]}
+                  cy={tNode.center[1]}
+                  r="1.05"
+                  fill="rgba(248, 250, 252, 0.35)"
+                />
+              {/each}
+            </g>
+
+            <!-- Glowing White National Outer Frontiers (Pure Vector Mask Eliminating Internal Shared Borders) -->
+            <g class="layer-supremacy-borders" pointer-events="none">
+              {#each playerTerritoryGroups as group (group.player.id)}
+                <g mask={`url(#supremacy-empire-mask-${offsetX}-${group.player.id})`}>
+                  {#each group.territories as bt (bt.id)}
+                    <path
+                      d={bt.svgPath}
+                      fill="none"
+                      stroke="#ffffff"
+                      stroke-opacity={group.isMe ? "0.38" : "0.22"}
+                      stroke-width={group.isMe ? "5.6" : "4.0"}
+                      stroke-linejoin="round"
+                    />
+                    <path
+                      d={bt.svgPath}
+                      fill="none"
+                      stroke={group.isMe ? "#ffffff" : "#e2e8f0"}
+                      stroke-opacity={group.isMe ? "0.94" : "0.82"}
+                      stroke-width={group.isMe ? "2.4" : "1.75"}
+                      stroke-linejoin="round"
+                    />
+                  {/each}
+                </g>
+              {/each}
+            </g>
+          {/if}
 
           <!-- PASS B (Layer 4): Compact Ocean/Coastal Theater Insignias (HEGEM-81 & HEGEM-77) -->
           {#if effectiveOverlays.regional && !cleanMapMode}
@@ -1122,8 +1402,9 @@
                 {@const isWhite = owner?.color === "white"}
 
                 <!-- HOI4-STYLE MILITARY DIVISION COUNTER WITH OPTIONAL COMPACT ECONOMIC SUB-BADGE -->
+                {@const baseBadgeScale = isCompact ? 0.80 : 0.92}
                 <g
-                  transform="translate({badgeX}, {badgeY}) scale({isCompact ? 0.80 : 0.92})"
+                  transform="translate({badgeX}, {badgeY}) scale({baseBadgeScale}, {isSupremacyMode ? (baseBadgeScale * 1.16).toFixed(3) : baseBadgeScale})"
                   class="division-counter"
                   data-testid={offsetX === 0 ? `badge-troop-${t.id}` : undefined}
                 >
@@ -1443,14 +1724,16 @@
                     x="0"
                     y={effectiveOverlays.economic ? 17.6 : 10.6}
                     text-anchor="middle"
-                    fill={isCapital ? "#fde047" : "#e2e8f0"}
-                    font-size={isCompact ? "5.7" : "6.1"}
-                    font-weight="700"
-                    letter-spacing="0.01em"
+                    fill={isCapital ? "#fde047" : isSupremacyMode ? "#f8fafc" : "#e2e8f0"}
+                    font-size={isSupremacyMode ? (isCompact ? "5.2" : "5.6") : isCompact ? "5.7" : "6.1"}
+                    font-weight={isSupremacyMode ? "800" : "700"}
+                    letter-spacing={isSupremacyMode ? "0.04em" : "0.01em"}
                     pointer-events="none"
-                    style="paint-order: stroke; stroke: #050912; stroke-width: 2.3px; stroke-linejoin: round;"
+                    style={isSupremacyMode
+                      ? "paint-order: stroke; stroke: #030712; stroke-width: 2.5px; stroke-linejoin: round;"
+                      : "paint-order: stroke; stroke: #050912; stroke-width: 2.3px; stroke-linejoin: round;"}
                   >
-                    {getTerritoryName(t.id)}
+                    {isSupremacyMode ? getTerritoryName(t.id).toUpperCase() : getTerritoryName(t.id)}
                   </text>
 
                   <!-- Structural Indicators (Dots for constructed infrastructure, only shown if economic overlay is off) -->
@@ -2010,6 +2293,12 @@
       {/each}
     </g>
   </svg>
+  </div>
+  </div>
+
+  {#if isSupremacyMode}
+    <div class="supremacy-horizon-vignette" aria-hidden="true"></div>
+  {/if}
 </div>
 
 <style>
@@ -2021,14 +2310,60 @@
     height: 100vh;
     cursor: grab;
     background: #050b16;
+    overflow: hidden;
   }
   .map-viewport:active {
     cursor: grabbing;
+  }
+  .map-perspective-host {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+  }
+  .map-perspective-host.supremacy-viewport {
+    perspective: var(--supremacy-persp, 1080px);
+    perspective-origin: 50% var(--supremacy-origin-y, 43%);
+    background: radial-gradient(ellipse at 50% 48%, #0e243d 0%, #071426 68%, #030812 100%);
+  }
+  .map-stage {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    transform-origin: 50% 50%;
+    transition: transform 520ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .map-stage.is-dragging {
+    transition: none;
   }
   .world-svg {
     width: 100%;
     height: 100%;
     display: block;
+  }
+  .world-svg.supremacy-bleed {
+    position: absolute;
+    left: -45%;
+    top: -45%;
+    width: 190%;
+    height: 190%;
+  }
+  .supremacy-horizon-vignette {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 2;
+    background:
+      linear-gradient(
+        180deg,
+        rgba(3, 8, 18, 0.72) 0%,
+        rgba(3, 8, 18, 0.24) 14%,
+        transparent 32%,
+        transparent 84%,
+        rgba(3, 8, 18, 0.42) 100%
+      ),
+      radial-gradient(ellipse at 50% 54%, transparent 56%, rgba(2, 6, 14, 0.52) 100%);
   }
 
   .clean-map-indicator {

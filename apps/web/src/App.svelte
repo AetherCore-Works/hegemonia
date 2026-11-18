@@ -83,6 +83,7 @@
     saveMapPreferences,
     type BaseMapMode,
     type MapOverlays,
+    type SupremacyAnglePreset,
   } from "./lib/map-preferences";
   import {
     type ActiveCombatAnimation,
@@ -185,6 +186,8 @@
   // Map Preferences (HEGEM-62: Decoupled Base Modes & Overlays with Local Persistence)
   const initialMapPrefs = loadMapPreferences();
   let baseMapMode = $state<BaseMapMode>(initialMapPrefs.base);
+  let supremacyAngle = $state<SupremacyAnglePreset>("right");
+  let supremacyResetSignal = $state(0);
   let mapOverlays = $state<MapOverlays>(initialMapPrefs.overlays);
   let autoCameraFocus = $state<boolean>(initialMapPrefs.autoCameraFocus);
   let cleanMapMode = $state(false);
@@ -571,7 +574,7 @@
         if (dx !== 0) camX = wrapCamX(camX + dx);
         if (dy !== 0) camY = clampCamY(camY + dy);
 
-        if (pressedKeys.has("q")) zoom = Math.max(0.75, zoom * 0.985);
+        if (pressedKeys.has("q")) zoom = Math.max(baseMapMode === "supremacy" ? 0.9 : 0.75, zoom * 0.985);
         if (pressedKeys.has("e")) zoom = Math.min(4.5, zoom * 1.015);
       }
       rafId = requestAnimationFrame(step);
@@ -598,6 +601,9 @@
     } else if (e.key === "F2" || k === "2") {
       e.preventDefault();
       baseMapMode = "cartographic";
+    } else if (k === "5" || k === "v") {
+      e.preventDefault();
+      baseMapMode = "supremacy";
     } else if (e.key === "F3" || k === "3") {
       e.preventDefault();
       mapOverlays.regional = !mapOverlays.regional;
@@ -1627,12 +1633,13 @@
     zoom = Math.min(4.5, zoom + 0.3);
   }
   function zoomOut() {
-    zoom = Math.max(0.75, zoom - 0.3);
+    zoom = Math.max(baseMapMode === "supremacy" ? 0.9 : 0.75, zoom - 0.3);
   }
   function resetZoom() {
     zoom = 1.05;
     camX = 0;
     camY = 0;
+    supremacyResetSignal++;
   }
 </script>
 
@@ -1693,6 +1700,8 @@
       {game}
       {myPlayerId}
       {baseMapMode}
+      bind:supremacyAngle
+      {supremacyResetSignal}
       overlays={mapOverlays}
       {cleanMapMode}
       {highlightObjectiveTerritories}
@@ -1788,6 +1797,8 @@
         {autoCameraFocus}
         onToggleAutoCameraFocus={(val) => (autoCameraFocus = val)}
         bind:baseMapMode
+        bind:supremacyAngle
+        onResetSupremacyTilt={() => (supremacyResetSignal++)}
         bind:overlays={mapOverlays}
         bind:cleanMapMode
         bind:highlightObjectiveTerritories

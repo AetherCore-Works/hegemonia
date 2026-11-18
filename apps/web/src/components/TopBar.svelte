@@ -37,7 +37,7 @@
   } from "@hegemonia/shared";
   import { auth } from "../lib/auth.svelte";
   import { tooltip } from "../lib/tooltip";
-  import type { BaseMapMode, MapOverlays } from "../lib/map-preferences";
+  import type { BaseMapMode, MapOverlays, SupremacyAnglePreset } from "../lib/map-preferences";
 
   const COLOR_HEX: Record<PlayerColor, string> = {
     blue: "#3b82f6",
@@ -89,6 +89,8 @@
       recon: boolean;
     };
     baseMapMode?: BaseMapMode;
+    supremacyAngle?: SupremacyAnglePreset;
+    onResetSupremacyTilt?: () => void;
     overlays?: MapOverlays;
     mapMode?: "cartographic" | "geopolitical" | "regional" | "economic";
     cleanMapMode: boolean;
@@ -130,6 +132,8 @@
     isImmersiveMode = false,
     hudVisibility,
     baseMapMode = $bindable("cartographic"),
+    supremacyAngle = $bindable<SupremacyAnglePreset>("right"),
+    onResetSupremacyTilt,
     overlays = $bindable({ regional: false, economic: false }),
     mapMode = $bindable(),
     cleanMapMode = $bindable(),
@@ -190,7 +194,7 @@
         ? "economic"
         : overlays.regional
           ? "regional"
-          : baseMapMode;
+          : (baseMapMode === "geopolitical" ? "geopolitical" : "cartographic");
     }
   });
 
@@ -1680,13 +1684,13 @@
     <!-- Map Mode Switcher & Overlays (HEGEM-62) + Camera Controls -->
     {#if hudVisibility.mapControls}
       <div class="map-mode-bar">
-        <!-- Row 1: Base Map Mode (Segmented Switch) -->
-        <div class="mode-row" title={t("map_base_label")}>
+        <!-- Row 1: Base Map Mode (Full-width 1-row Grid) -->
+        <div class="mode-row base-mode-row" title={t("map_base_label")}>
           <span class="group-label">
             <Icon name="compass" size={11} />
             <span>{t("map_base_label")}</span>
           </span>
-          <div class="segmented-control">
+          <div class="segmented-control base-segmented-grid">
             <button
               class="mode-btn base-btn"
               class:active={baseMapMode === "cartographic"}
@@ -1705,8 +1709,63 @@
               <Icon name="flag" size={11} />
               <span>{t("map_mode_geopolitical")}</span>
             </button>
+            <button
+              class="mode-btn base-btn supremacy-btn"
+              class:active={baseMapMode === "supremacy"}
+              onclick={() => (baseMapMode = "supremacy")}
+              title={t("map_mode_supremacy_title")}
+              data-testid="btn-map-mode-supremacy"
+            >
+              <Icon name="perspective-map" size={11} />
+              <span>{t("map_mode_supremacy")}</span>
+            </button>
           </div>
         </div>
+
+        {#if baseMapMode === "supremacy"}
+          <!-- Row 1B: Supremacy 2.5D Oblique Angle Presets -->
+          <div class="mode-row supremacy-angle-row" title={t("map_angle_reset_title")}>
+            <span class="group-label">
+              <Icon name="perspective-map" size={10} />
+              <span>{t("map_angle_label")}</span>
+            </span>
+            <div class="segmented-control">
+              <button
+                class="mode-btn angle-btn"
+                class:active={supremacyAngle === "left"}
+                onclick={() => {
+                  supremacyAngle = "left";
+                  onResetSupremacyTilt?.();
+                }}
+                title={t("map_angle_reset_title")}
+              >
+                <span>{t("map_angle_left")}</span>
+              </button>
+              <button
+                class="mode-btn angle-btn"
+                class:active={supremacyAngle === "center"}
+                onclick={() => {
+                  supremacyAngle = "center";
+                  onResetSupremacyTilt?.();
+                }}
+                title={t("map_angle_reset_title")}
+              >
+                <span>{t("map_angle_center")}</span>
+              </button>
+              <button
+                class="mode-btn angle-btn"
+                class:active={supremacyAngle === "right"}
+                onclick={() => {
+                  supremacyAngle = "right";
+                  onResetSupremacyTilt?.();
+                }}
+                title={t("map_angle_reset_title")}
+              >
+                <span>{t("map_angle_right")}</span>
+              </button>
+            </div>
+          </div>
+        {/if}
 
         <!-- Row 2: Tactical Overlays (Toggles + Clear) -->
         <div class="mode-row" title={t("map_overlays_label")}>
@@ -2725,7 +2784,7 @@
       0 20px 44px rgba(0, 0, 0, 0.88),
       0 0 24px rgba(234, 179, 8, 0.08),
       inset 0 1px 0 rgba(255, 255, 255, 0.08);
-    padding: 0.78rem 0.85rem;
+    padding: 0.94rem 0.98rem;
     display: flex;
     flex-direction: column;
     gap: 0.55rem;
@@ -4152,8 +4211,8 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.5rem;
-    padding-bottom: 0.48rem;
+    gap: 0.55rem;
+    padding-bottom: 0.54rem;
     border-bottom: 1px solid rgba(234, 179, 8, 0.22);
   }
   .hq-general {
@@ -4216,7 +4275,7 @@
   .hq-header-right {
     display: flex;
     align-items: center;
-    gap: 0.38rem;
+    gap: 0.44rem;
     flex-shrink: 0;
   }
   .reserve-badge {
@@ -4230,10 +4289,13 @@
     font-family: var(--font-mono);
     font-size: 0.7rem;
     font-weight: 800;
-    padding: 0.2rem 0.42rem;
+    height: 30px;
+    box-sizing: border-box;
+    padding: 0 0.52rem;
     border-radius: 6px;
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 0.22rem;
     box-shadow: 0 0 12px rgba(234, 179, 8, 0.18);
     flex-shrink: 0;
@@ -4431,8 +4493,14 @@
   }
   .btn-exit-room {
     width: 30px;
+    min-width: 30px;
     height: 30px;
     padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    box-sizing: border-box;
     color: #f87171;
     background: rgba(127, 29, 29, 0.28);
     border-color: rgba(239, 68, 68, 0.42);
@@ -4830,11 +4898,11 @@
   .map-mode-bar {
     display: flex;
     flex-direction: column;
-    gap: 0.35rem;
+    gap: 0.4rem;
     background: rgba(6, 11, 22, 0.72);
     border: 1px solid rgba(148, 163, 184, 0.18);
     border-radius: 7px;
-    padding: 0.45rem 0.52rem;
+    padding: 0.5rem 0.56rem;
   }
   .mode-row {
     display: flex;
@@ -4842,8 +4910,21 @@
     justify-content: space-between;
     gap: 0.45rem;
   }
+  .mode-row.base-mode-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.32rem;
+  }
+  .segmented-control.base-segmented-grid {
+    display: flex;
+    align-items: center;
+    justify-content: stretch;
+    flex-wrap: nowrap;
+    gap: 0.28rem;
+    width: 100%;
+  }
   .mode-row.camera-row {
-    padding-top: 0.32rem;
+    padding-top: 0.34rem;
     border-top: 1px solid rgba(148, 163, 184, 0.14);
   }
   .group-label {
@@ -4905,6 +4986,42 @@
     border-color: #38bdf8;
     color: #e0f2fe;
     box-shadow: 0 0 8px rgba(56, 189, 248, 0.2);
+  }
+  .mode-btn.supremacy-btn.active {
+    background: linear-gradient(
+      180deg,
+      rgba(56, 189, 248, 0.25) 0%,
+      rgba(14, 116, 144, 0.24) 100%
+    );
+    border-color: #38bdf8;
+    color: #e0f2fe;
+    box-shadow: 0 0 10px rgba(56, 189, 248, 0.26);
+  }
+  .mode-btn.base-btn {
+    flex: 1 1 auto;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.28rem;
+    padding: 0 0.42rem;
+    font-size: 0.64rem;
+    white-space: nowrap;
+    box-sizing: border-box;
+  }
+  .supremacy-angle-row {
+    padding-top: 0.3rem;
+    border-top: 1px dashed rgba(56, 189, 248, 0.18);
+  }
+  .mode-btn.angle-btn {
+    min-width: 48px;
+    height: 25px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.61rem;
+    padding: 0 0.46rem;
+    box-sizing: border-box;
   }
   .mode-btn.clear-layers-btn {
     font-size: 0.62rem;
@@ -5804,6 +5921,12 @@
     }
     .tc-directive {
       font-size: 0.66rem;
+    }
+  }
+
+  @media (max-width: 480px) {
+    .segmented-control.base-segmented-grid {
+      flex-wrap: wrap;
     }
   }
 

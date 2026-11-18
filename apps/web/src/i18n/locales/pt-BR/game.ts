@@ -179,7 +179,7 @@ export const ptBRGame: TranslationCatalog = {
   audio_track_custom: "Trilha Customizada (track1.mp3)",
   inspect_map: "Inspecionar Mapa",
   inspect_map_title: "Recolher para inspecionar o mapa tático",
-  hints_nav: "WASD / Setas: Mover • Q / E / Scroll: Zoom • F1-F3: Modos de Mapa • H: HUD Imersiva",
+  hints_nav: "WASD / Setas: Mover • Q / E / Scroll: Zoom • 1-5 / V: Modos de Mapa • Shift+Arrastar: Inclinar 2.5D • H: HUD Imersiva",
   directive: "Diretriz",
   secret_objective_label: "Diretriz Secreta de Alto Comando",
   secret_objective_drawer_title: "Diretriz Secreta de Alto Comando",

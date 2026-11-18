@@ -95,6 +95,7 @@ export const ICON_NAMES = [
   "microphone",
   "send",
   "compass",
+  "perspective-map",
   "dice",
   "flag",
   "handshake",
@@ -556,6 +557,10 @@ export const ICON_CATALOG: Record<IconName, readonly IconShape[]> = {
   compass: [
     { tag: "circle", attrs: { cx: 12, cy: 12, r: 10 } },
     { tag: "polygon", attrs: { points: "16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76" } },
+  ],
+  "perspective-map": [
+    { tag: "polygon", attrs: { points: "2,18 6.5,6 17.5,6 22,18" } },
+    { tag: "path", attrs: { d: "M9 6l-2 12M15 6l2 12M5 11.5h14" } },
   ],
   dice: [
     { tag: "rect", attrs: { x: 3, y: 3, width: 18, height: 18, rx: 3 } },
