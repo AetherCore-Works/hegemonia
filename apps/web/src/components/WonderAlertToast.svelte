@@ -18,7 +18,7 @@
   let collapsed = $state(false);
 </script>
 
-<aside class="wonder-toast-wrapper" role="alert" aria-label="Alerta de Construção da Maravilha Soberana">
+<aside class="wonder-toast-wrapper" role="alert" aria-label="Alerta de Construção da Cidadela do Dia Final">
   {#if collapsed}
     <div class="wonder-toast-pill-bar">
       <div class="card-corner tl"></div>
@@ -29,7 +29,7 @@
       <div class="pill-info">
         <Icon name="fortification" size={15} color="#f59e0b" />
         <span class="pill-warning-text">
-          ALERTA GLOBAL: MARAVILHA DO BASTIÃO EM {wonder.territoryName.toUpperCase()} ({wonder.roundsHeld}/{wonder.roundsRequired} RODADAS)
+          ALERTA GLOBAL: CIDADELA DO DIA FINAL EM {wonder.territoryName.toUpperCase()} ({wonder.roundsHeld}/{wonder.roundsRequired} RODADAS)
         </span>
       </div>
 
@@ -65,11 +65,11 @@
         <div class="header-main">
           <div class="header-badge">
             <Icon name="fortification" size={15} color="#f59e0b" />
-            <span>ALERTA DE FIM DO MUNDO • BASTIÃO SOBERANO</span>
+            <span>PROTOCOLO DIA FINAL • CIDADELA SOBERANA</span>
           </div>
-          <h2 id="wonder-modal-title">A Maravilha Soberana Está Sendo Erguida!</h2>
+          <h2 id="wonder-modal-title">A Cidadela do Dia Final Está Sendo Erguida!</h2>
           <p class="toast-subtitle">
-            O general <strong>{wonder.builderName}</strong> estabeleceu a Maravilha em
+            O general <strong>{wonder.builderName}</strong> estabeleceu a Cidadela do Dia Final em
             <strong>{wonder.territoryName}</strong>. Caso esta fortaleza resista intacta por
             {wonder.roundsRequired} rodadas, <strong>o mundo acaba</strong> e a vitória será imediata!
           </p>
