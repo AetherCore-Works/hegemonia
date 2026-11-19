@@ -3,6 +3,7 @@ import {
   isDoctrineAvailableInLobby,
   isObjectiveCompatibleWithDoctrine,
   normalizeCustomRules,
+  type AeronavalBattleResult,
   type BorderTradeDeal,
   type BuildingType,
   createInitialPlayerAnalytics,
@@ -537,12 +538,73 @@ export interface NavalBlockadeCheck {
   reason?: string;
   attackerNavy: number;
   defenderNavy: number;
+  attackerAircraft?: number;
+  defenderAircraft?: number;
+  attackerAeronaval?: number;
+  defenderAeronaval?: number;
+  hasAeronavalBattle?: boolean;
 }
 
 /**
- * Checks asymmetric naval blockade over strategic maritime links (HEGEM-57).
+ * Selects a default attacking task force of `quantity` units for a maritime crossing (HEGEM-179),
+ * holding back 1 ground unit as garrison whenever `groundAvailable >= 2` so that available
+ * Navy and Aircraft units are included in the amphibious task force alongside ground troops.
+ */
+export function selectMaritimeAttackUnits(
+  available: UnitCounts,
+  quantity: number
+): UnitCounts {
+  const targetQty = Math.max(0, Math.min(quantity, totalUnits(available)));
+  if (targetQty <= 0) return emptyUnitCounts();
+  if (available.navy + available.aircraft <= 0) {
+    return selectUnits(available, targetQty);
+  }
+
+  const groundAvail = available.infantry + available.tank + available.artillery;
+  if (groundAvail <= 0) {
+    return selectUnits(available, targetQty);
+  }
+
+  const pool: UnitCounts = { ...available };
+  const selected = emptyUnitCounts();
+  let remaining = targetQty;
+
+  // Ensure at least 1 ground unit is in the task force (preferring tank/infantry/artillery)
+  if (groundAvail >= 2) {
+    // Hold back 1 ground unit in origin garrison (prefer infantry -> artillery -> tank)
+    if (pool.infantry > 0) pool.infantry -= 1;
+    else if (pool.artillery > 0) pool.artillery -= 1;
+    else if (pool.tank > 0) pool.tank -= 1;
+  }
+
+  // First guarantee 1 ground unit in the attacking task force
+  const groundOrder: UnitType[] = ["infantry", "tank", "artillery"];
+  for (const ut of groundOrder) {
+    if (remaining > 0 && pool[ut] > 0) {
+      selected[ut] += 1;
+      pool[ut] -= 1;
+      remaining -= 1;
+      break;
+    }
+  }
+
+  // Next include Aeronaval escort (Navy + Aircraft) followed by remaining ground forces
+  const priorityOrder: UnitType[] = ["navy", "aircraft", "tank", "artillery", "infantry"];
+  for (const ut of priorityOrder) {
+    if (remaining <= 0) break;
+    const take = Math.min(pool[ut], remaining);
+    selected[ut] += take;
+    pool[ut] -= take;
+    remaining -= take;
+  }
+
+  return selected;
+}
+
+/**
+ * Checks asymmetric naval blockade over strategic maritime links (HEGEM-57 & HEGEM-179).
  * If the defender has strictly more naval units in connected ports than the attacker,
- * the maritime passage is blockaded.
+ * the maritime passage is blockaded unless broken in an Aeronaval Battle.
  */
 export function checkNavalBlockade(
   state: GameState,
@@ -551,13 +613,31 @@ export function checkNavalBlockade(
   actingPlayerId: string
 ): NavalBlockadeCheck {
   if (!isSeaLink(fromTerritoryId, toTerritoryId)) {
-    return { isBlockaded: false, attackerNavy: 0, defenderNavy: 0 };
+    return {
+      isBlockaded: false,
+      attackerNavy: 0,
+      defenderNavy: 0,
+      attackerAircraft: 0,
+      defenderAircraft: 0,
+      attackerAeronaval: 0,
+      defenderAeronaval: 0,
+      hasAeronavalBattle: false,
+    };
   }
 
   const fromTerr = state.territories[fromTerritoryId];
   const toTerr = state.territories[toTerritoryId];
   if (!fromTerr || !toTerr) {
-    return { isBlockaded: false, attackerNavy: 0, defenderNavy: 0 };
+    return {
+      isBlockaded: false,
+      attackerNavy: 0,
+      defenderNavy: 0,
+      attackerAircraft: 0,
+      defenderAircraft: 0,
+      attackerAeronaval: 0,
+      defenderAeronaval: 0,
+      hasAeronavalBattle: false,
+    };
   }
 
   const attackerPlayer = state.players.find((p) => p.id === actingPlayerId);
@@ -568,13 +648,16 @@ export function checkNavalBlockade(
   const attackerExterm = attackerPlayer?.doctrineId === "extermination";
   const defenderExterm = defenderPlayer?.doctrineId === "extermination";
 
+  const fromUnits = getTerritoryUnits(fromTerr);
+  const toUnits = getTerritoryUnits(toTerr);
+
   let attackerNavy = 0;
   if (
     fromTerr.ownerId === actingPlayerId &&
     (hasTerritoryBuilding(fromTerr, "port") || attackerExterm) &&
     attackerHasOil
   ) {
-    attackerNavy = getTerritoryUnits(fromTerr).navy;
+    attackerNavy = fromUnits.navy;
   }
 
   let defenderNavy = 0;
@@ -583,8 +666,13 @@ export function checkNavalBlockade(
     (hasTerritoryBuilding(toTerr, "port") || defenderExterm) &&
     defenderHasOil
   ) {
-    defenderNavy = getTerritoryUnits(toTerr).navy;
+    defenderNavy = toUnits.navy;
   }
+
+  const attackerAircraft = fromTerr.ownerId === actingPlayerId ? fromUnits.aircraft : 0;
+  const defenderAircraft = toTerr.ownerId !== actingPlayerId ? toUnits.aircraft : 0;
+  const attackerAeronaval = fromUnits.navy + attackerAircraft;
+  const defenderAeronaval = toUnits.navy + defenderAircraft;
 
   const isBlockaded = defenderNavy > attackerNavy;
   return {
@@ -592,6 +680,11 @@ export function checkNavalBlockade(
     reason: isBlockaded ? `Bloqueio naval inimigo (${defenderNavy} vs ${attackerNavy} frotas)` : undefined,
     attackerNavy,
     defenderNavy,
+    attackerAircraft,
+    defenderAircraft,
+    attackerAeronaval,
+    defenderAeronaval,
+    hasAeronavalBattle: defenderAeronaval > 0,
   };
 }
 
@@ -2987,9 +3080,12 @@ export function applyAction(
 
       const fromUnits = getTerritoryUnits(fromTerr);
       const toUnits = getTerritoryUnits(toTerr);
+      const isMaritimeAttack = isSeaLink(fromTerr.id, toTerr.id);
       const attackingUnits = action.units
         ? { ...action.units }
-        : selectUnits(fromUnits, fromTerr.armies - 1);
+        : isMaritimeAttack
+          ? selectMaritimeAttackUnits(fromUnits, fromTerr.armies - 1)
+          : selectUnits(fromUnits, fromTerr.armies - 1);
       const attackingCount = totalUnits(attackingUnits);
       if (attackingCount < 1 || attackingCount > fromTerr.armies - 1) {
         throw new Error("A força-tarefa deve manter ao menos 1 divisão de guarnição na origem.");
@@ -3024,16 +3120,33 @@ export function applyAction(
         }
       }
 
-      const isMaritimeAttack = isSeaLink(fromTerr.id, toTerr.id);
+      const attackerAeronavalPool: UnitCounts = {
+        infantry: 0,
+        tank: 0,
+        artillery: 0,
+        aircraft: attackingUnits.aircraft,
+        navy: attackingUnits.navy,
+      };
+      const defenderAeronavalPool: UnitCounts = {
+        infantry: 0,
+        tank: 0,
+        artillery: 0,
+        aircraft: toUnits.aircraft,
+        navy: toUnits.navy,
+      };
+      const attackerAeronavalCount = attackerAeronavalPool.aircraft + attackerAeronavalPool.navy;
+      const defenderAeronavalCount = defenderAeronavalPool.aircraft + defenderAeronavalPool.navy;
+
       let coastalBombardment = false;
       if (isMaritimeAttack) {
         const blockade = checkNavalBlockade(state, fromTerr.id, toTerr.id, playerId);
-        if (blockade.isBlockaded) {
+        // HEGEM-179: If defender has naval/aeronaval forces and attacker sends no Navy/Aircraft to fight the Aeronaval Battle, crossing is blocked
+        if ((blockade.isBlockaded || defenderAeronavalCount > 0) && attackerAeronavalCount === 0) {
           throw new Error(
             `A travessia marítima para ${mapById.get(toTerr.id)?.namePt ?? toTerr.id} está bloqueada por frotas inimigas ancoradas no Porto.`
           );
         }
-        if (blockade.attackerNavy > 0) {
+        if (defenderAeronavalCount === 0 && (blockade.attackerNavy > 0 || (attackingUnits.navy > 0 && (currentPlayer.resources?.oil ?? 0) > 0))) {
           coastalBombardment = true;
         }
       }
@@ -3061,6 +3174,143 @@ export function applyAction(
         );
       }
 
+      const defenderPlayer = state.players.find((p) => p.id === toTerr.ownerId);
+      const fromName = fromDef.namePt;
+      const toName = toDef.namePt;
+
+      const attackerGroundPool: UnitCounts = {
+        infantry: attackingUnits.infantry,
+        tank: attackingUnits.tank,
+        artillery: attackingUnits.artillery,
+        aircraft: 0,
+        navy: 0,
+      };
+      const defenderGroundPool: UnitCounts = {
+        infantry: toUnits.infantry,
+        tank: toUnits.tank,
+        artillery: toUnits.artillery,
+        aircraft: 0,
+        navy: 0,
+      };
+
+      // ================= HEGEM-179: BATALHA ESTRITAMENTE AERONAVAL PRÉ-DESEMBARQUE =================
+      let aeronavalBattleResult: AeronavalBattleResult | undefined;
+      let survivingAttackerAeronavalUnits: UnitCounts = { ...attackerAeronavalPool };
+      let survivingDefenderAeronavalUnits: UnitCounts = { ...defenderAeronavalPool };
+      let navalAttackerLossUnits: UnitCounts = emptyUnitCounts();
+      let navalDefenderLossUnits: UnitCounts = emptyUnitCounts();
+      let navalAttackerLosses = 0;
+      let navalDefenderLosses = 0;
+      let navalFuelConsumed = false;
+
+      if (isMaritimeAttack && defenderAeronavalCount > 0 && attackerAeronavalCount > 0) {
+        if (attackerAeronavalPool.navy > 0 && (currentPlayer.resources?.oil ?? 0) > 0) {
+          currentPlayer.resources.oil = Math.max(0, (currentPlayer.resources?.oil ?? 0) - 1);
+          navalFuelConsumed = true;
+        }
+
+        const maxNavalAttDice = Math.min(3, attackerAeronavalCount);
+        const navalAttackerDiceCount = action.diceCount
+          ? Math.min(action.diceCount, maxNavalAttDice)
+          : maxNavalAttDice;
+        // Defesa Aérea Naval Exclusiva: Aeronaves (Aero) do defensor atuam diretamente na defesa naval junto com a Marinha
+        const navalDefenderDiceCount = Math.min(3, defenderAeronavalCount);
+
+        const navalAttackerDice = Array.from({ length: navalAttackerDiceCount }, () =>
+          rng.rollD6()
+        ).sort((a, b) => b - a);
+        const navalDefenderDice = Array.from({ length: navalDefenderDiceCount }, () =>
+          rng.rollD6()
+        ).sort((a, b) => b - a);
+
+        const navalComparisons = Math.min(navalAttackerDice.length, navalDefenderDice.length);
+        for (let i = 0; i < navalComparisons; i++) {
+          if (navalAttackerDice[i] > navalDefenderDice[i]) {
+            navalDefenderLosses++;
+          } else {
+            navalAttackerLosses++;
+          }
+        }
+
+        const navalAttackerCombat = removeCasualties(attackerAeronavalPool, navalAttackerLosses);
+        const navalDefenderCombat = removeCasualties(defenderAeronavalPool, navalDefenderLosses);
+        survivingAttackerAeronavalUnits = navalAttackerCombat.remaining;
+        survivingDefenderAeronavalUnits = navalDefenderCombat.remaining;
+        navalAttackerLossUnits = navalAttackerCombat.losses;
+        navalDefenderLossUnits = navalDefenderCombat.losses;
+
+        const survivingAttackerAeronaval = totalUnits(survivingAttackerAeronavalUnits);
+        const survivingDefenderAeronaval = totalUnits(survivingDefenderAeronavalUnits);
+        const attackerWonNavalBattle =
+          survivingDefenderAeronaval === 0 ||
+          (navalDefenderLosses > navalAttackerLosses &&
+            survivingAttackerAeronaval >= survivingDefenderAeronaval);
+
+        aeronavalBattleResult = {
+          attackerDice: navalAttackerDice,
+          defenderDice: navalDefenderDice,
+          attackerLosses: navalAttackerLosses,
+          defenderLosses: navalDefenderLosses,
+          attackerUnits: { ...attackerAeronavalPool },
+          defenderUnits: { ...defenderAeronavalPool },
+          attackerLossUnits: navalAttackerLossUnits,
+          defenderLossUnits: navalDefenderLossUnits,
+          attackerWon: attackerWonNavalBattle,
+          landingRepelled: !attackerWonNavalBattle,
+        };
+
+        if (!attackerWonNavalBattle) {
+          // Defensor venceu a batalha naval: invasão repelida no mar, tropas terrestres recuam nos transportes
+          const survivingTaskForce = addUnits(attackerGroundPool, survivingAttackerAeronavalUnits);
+          setTerritoryUnits(
+            fromTerr,
+            addUnits(subtractUnits(fromUnits, attackingUnits), survivingTaskForce)
+          );
+          setTerritoryUnits(
+            toTerr,
+            addUnits(defenderGroundPool, survivingDefenderAeronavalUnits)
+          );
+
+          currentPlayer.analytics = currentPlayer.analytics ?? createInitialPlayerAnalytics();
+          for (const u of UNIT_TYPES) {
+            currentPlayer.analytics.unitsLost[u] += navalAttackerLossUnits[u];
+          }
+          if (defenderPlayer) {
+            defenderPlayer.analytics = defenderPlayer.analytics ?? createInitialPlayerAnalytics();
+            for (const u of UNIT_TYPES) {
+              defenderPlayer.analytics.unitsLost[u] += navalDefenderLossUnits[u];
+            }
+          }
+
+          state.lastCombat = {
+            fromTerritoryId: fromTerr.id,
+            toTerritoryId: toTerr.id,
+            attackerDice: navalAttackerDice,
+            defenderDice: navalDefenderDice,
+            attackerLosses: navalAttackerLosses,
+            defenderLosses: navalDefenderLosses,
+            attackerUnits: { ...attackingUnits },
+            attackerLossUnits: navalAttackerLossUnits,
+            defenderLossUnits: navalDefenderLossUnits,
+            conquered: false,
+            navalBlockade: true,
+            amphibiousRepelled: true,
+            aeronavalBattle: aeronavalBattleResult,
+          };
+
+          state.log.push(
+            `⚓ BATALHA AERONAVAL: ${fromName} [${navalAttackerDice.join(",")}] vs ${toName} [${navalDefenderDice.join(",")}] → baixas ATQ:${navalAttackerLosses} DEF:${navalDefenderLosses}. Invasão anfíbia repelida no mar! O desembarque terrestre foi impedido e as tropas embarcadas recuaram.`
+          );
+          break;
+        }
+
+        // Atacante venceu a batalha naval: bloqueio marítimo rompido e bônus de bombardeio costeiro da frota sobrevivente
+        coastalBombardment = survivingAttackerAeronavalUnits.navy > 0;
+        state.log.push(
+          `⚓ BATALHA AERONAVAL: ${fromName} [${navalAttackerDice.join(",")}] vs ${toName} [${navalDefenderDice.join(",")}] → baixas ATQ:${navalAttackerLosses} DEF:${navalDefenderLosses}. Bloqueio marítimo rompido! Tropas terrestres desembarcam imediatamente${coastalBombardment ? " com apoio de bombardeio costeiro da frota sobrevivente" : ""}.`
+        );
+      }
+
       const attackerHadFuel = (currentPlayer.resources?.oil ?? 0) > 0;
       if (isBlitzSpearheadAdvance) {
         const blitzOilCost = getEffectiveBlitzOilCost(currentPlayer, 1);
@@ -3071,12 +3321,11 @@ export function applyAction(
         currentPlayer.resources.oil = Math.max(0, (currentPlayer.resources?.oil ?? 0) - 1);
       }
 
-      if (coastalBombardment && (currentPlayer.resources?.oil ?? 0) > 0) {
+      if (coastalBombardment && !navalFuelConsumed && (currentPlayer.resources?.oil ?? 0) > 0) {
         // HEGEM-128: Bombardeio e assalto naval consomem 1 Petróleo da frota
         currentPlayer.resources.oil = Math.max(0, (currentPlayer.resources?.oil ?? 0) - 1);
       }
 
-      const defenderPlayer = state.players.find((p) => p.id === toTerr.ownerId);
       const isDefendingCapital =
         defenderPlayer?.capitalTerritoryId === toTerr.id &&
         toTerr.ownerId === defenderPlayer.id;
@@ -3111,25 +3360,33 @@ export function applyAction(
         }
       }
 
+      // Em travessia marítima, apenas as tropas terrestres desembarcadas rolam dados na batalha terrestre.
+      // Em qualquer combate terrestre, Aeronaves (Aero) e Marinha do defensor NÃO atuam na defesa terrestre (HEGEM-179).
+      const activeGroundAttackerPool = isMaritimeAttack ? attackerGroundPool : attackingUnits;
+      const activeGroundAttackerCount = totalUnits(activeGroundAttackerPool);
+      const groundDefenderCount = totalUnits(defenderGroundPool);
+
       const hasCasBonus = toTerr.casBonusAttackerId === playerId;
-      const maxAttackerDice = Math.min(hasCasBonus ? 4 : 3, attackingCount);
+      const maxAttackerDice = Math.min(hasCasBonus ? 4 : 3, activeGroundAttackerCount);
       const attackerDiceCount = action.diceCount
         ? Math.min(action.diceCount, maxAttackerDice)
         : maxAttackerDice;
-      const defenderDiceCount = Math.min(3, toTerr.armies);
+      const defenderDiceCount = Math.min(3, groundDefenderCount);
 
-      const attackerDice = Array.from({ length: attackerDiceCount }, () => rng.rollD6()).sort(
-        (a, b) => b - a
-      );
-      const defenderDice = Array.from({ length: defenderDiceCount }, () => rng.rollD6()).sort(
-        (a, b) => b - a
-      );
+      const attackerDice =
+        groundDefenderCount > 0
+          ? Array.from({ length: attackerDiceCount }, () => rng.rollD6()).sort((a, b) => b - a)
+          : (aeronavalBattleResult?.attackerDice ?? []);
+      const defenderDice =
+        groundDefenderCount > 0
+          ? Array.from({ length: defenderDiceCount }, () => rng.rollD6()).sort((a, b) => b - a)
+          : (aeronavalBattleResult?.defenderDice ?? []);
 
       // Tank re-roll 1s (Ponta de Lança Couraçada) if attacker has oil (HEGEM-25 & HEGEM-109)
       let blitzkriegBonus = false;
       let heavyArmorBonus = false;
       let tankSuperiorityBonus = false;
-      if (attackingUnits.tank > 0 && attackerHadFuel) {
+      if (groundDefenderCount > 0 && attackingUnits.tank > 0 && attackerHadFuel) {
         // 1-2 Tanques: re-rola 1s; 3+ Tanques: re-rola 1s e 2s (Ponta de Lança Pesada)
         const minRoll = attackingUnits.tank >= 3 ? 3 : 2;
         let reRolledAny = false;
@@ -3165,31 +3422,36 @@ export function applyAction(
       const {
         attackerBonusApplied: doctrineAttackerBonus,
         defenderBonusApplied: doctrineDefenderBonus,
-      } = applyDoctrineCombatDiceModifiers({
-        state,
-        map,
-        attacker: currentPlayer,
-        defender: defenderPlayer,
-        fromTerritory: fromTerr,
-        toTerritory: toTerr,
-        committedAttackerUnits: attackingUnits,
-        defenderUnits: toUnits,
-        attackerDice,
-        defenderDice,
-      });
+      } =
+        groundDefenderCount > 0
+          ? applyDoctrineCombatDiceModifiers({
+              state,
+              map,
+              attacker: currentPlayer,
+              defender: defenderPlayer,
+              fromTerritory: fromTerr,
+              toTerritory: toTerr,
+              committedAttackerUnits: activeGroundAttackerPool,
+              defenderUnits: defenderGroundPool,
+              attackerDice,
+              defenderDice,
+            })
+          : { attackerBonusApplied: false, defenderBonusApplied: false };
 
-      if (attackerModifier > 0 && attackerDice.length > 0) {
-        attackerDice[0] += attackerModifier;
-      }
-      if (coastalBombardment && attackerDice.length > 0) {
-        attackerDice[0] += 1;
-      }
-      if (defenderModifier > 0 && defenderDice.length > 0) {
-        defenderDice[0] += defenderModifier;
+      if (groundDefenderCount > 0) {
+        if (attackerModifier > 0 && attackerDice.length > 0) {
+          attackerDice[0] += attackerModifier;
+        }
+        if (coastalBombardment && attackerDice.length > 0) {
+          attackerDice[0] += 1;
+        }
+        if (defenderModifier > 0 && defenderDice.length > 0) {
+          defenderDice[0] += defenderModifier;
+        }
       }
 
       let encircledDefenderPenalty: number | undefined;
-      if (toTerr.isEncircled) {
+      if (groundDefenderCount > 0 && toTerr.isEncircled) {
         const pen = (toTerr.encircledRounds ?? 1) >= 2 ? 2 : 1;
         encircledDefenderPenalty = pen;
         if (defenderDice.length > 0) {
@@ -3198,7 +3460,12 @@ export function applyAction(
       }
 
       let unescortedArtilleryPenalty = false;
-      if (toUnits.artillery > 0 && toUnits.infantry === 0 && toUnits.tank === 0) {
+      if (
+        groundDefenderCount > 0 &&
+        defenderGroundPool.artillery > 0 &&
+        defenderGroundPool.infantry === 0 &&
+        defenderGroundPool.tank === 0
+      ) {
         unescortedArtilleryPenalty = true;
         if (defenderDice.length > 0) {
           defenderDice[0] = Math.max(1, defenderDice[0] - 1);
@@ -3206,49 +3473,78 @@ export function applyAction(
       }
 
       const fortLevel = getTerritoryBuildingLevel(toTerr, "fortification");
-      // Casamata Nv. 1: +1 ao maior dado de defesa (suprimida se atacante tiver 2+ artilharias)
-      if (fortLevel >= 1 && defenderDice.length > 0) {
-        if (!artillerySuppressionBonus) {
+      if (groundDefenderCount > 0) {
+        // Casamata Nv. 1: +1 ao maior dado de defesa (suprimida se atacante tiver 2+ artilharias)
+        if (fortLevel >= 1 && defenderDice.length > 0) {
+          if (!artillerySuppressionBonus) {
+            defenderDice[0] += 1;
+          }
+        }
+        // HEGEM-161: Cidadela do Dia Final em construção concede +1 no dado de defesa
+        if (
+          hasTerritoryBuilding(toTerr, "wonder") &&
+          defenderPlayer?.wonderStatus === "constructing" &&
+          defenderDice.length > 0
+        ) {
           defenderDice[0] += 1;
         }
-      }
-      // HEGEM-161: Cidadela do Dia Final em construção concede +1 no dado de defesa
-      if (
-        hasTerritoryBuilding(toTerr, "wonder") &&
-        defenderPlayer?.wonderStatus === "constructing" &&
-        defenderDice.length > 0
-      ) {
-        defenderDice[0] += 1;
-      }
-      // Fortaleza Nv. 2: -1 ao maior dado de ataque (neutralizada se atacante tiver 4+ artilharias)
-      if (fortLevel >= 2 && attackerDice.length > 0) {
-        if (!artillerySiegeBonus) {
-          attackerDice[0] = Math.max(1, attackerDice[0] - 1);
+        // Fortaleza Nv. 2: -1 ao maior dado de ataque (neutralizada se atacante tiver 4+ artilharias)
+        if (fortLevel >= 2 && attackerDice.length > 0) {
+          if (!artillerySiegeBonus) {
+            attackerDice[0] = Math.max(1, attackerDice[0] - 1);
+          }
+        }
+        // 6+ Artilharias: Saturação maciça (+1 ao maior dado de ataque)
+        if (artillerySaturationBonus && attackerDice.length > 0) {
+          attackerDice[0] += 1;
         }
       }
-      // 6+ Artilharias: Saturação maciça (+1 ao maior dado de ataque)
-      if (artillerySaturationBonus && attackerDice.length > 0) {
-        attackerDice[0] += 1;
-      }
 
-      let attackerLosses = 0;
-      let defenderLosses = 0;
-      const comparisons = Math.min(attackerDice.length, defenderDice.length);
+      let groundAttackerLosses = 0;
+      let groundDefenderLosses = 0;
+      const comparisons =
+        groundDefenderCount > 0 ? Math.min(attackerDice.length, defenderDice.length) : 0;
       let capitalTiesDefended = 0;
 
       for (let i = 0; i < comparisons; i++) {
         if (attackerDice[i] > defenderDice[i]) {
-          defenderLosses++;
+          groundDefenderLosses++;
         } else {
-          attackerLosses++;
+          groundAttackerLosses++;
           if (attackerDice[i] === defenderDice[i] && isDefendingCapital) {
             capitalTiesDefended++;
           }
         }
       }
 
-      const attackerCombat = removeCasualties(attackingUnits, attackerLosses);
-      const defenderCombat = removeCasualties(toUnits, defenderLosses);
+      const groundAttackerCombat = removeCasualties(activeGroundAttackerPool, groundAttackerLosses);
+      const groundDefenderCombat = removeCasualties(defenderGroundPool, groundDefenderLosses);
+      const attackerCombat = {
+        remaining: isMaritimeAttack
+          ? addUnits(groundAttackerCombat.remaining, survivingAttackerAeronavalUnits)
+          : groundAttackerCombat.remaining,
+        losses: isMaritimeAttack
+          ? addUnits(groundAttackerCombat.losses, navalAttackerLossUnits)
+          : groundAttackerCombat.losses,
+      };
+
+      const groundDefendersSurviving = totalUnits(groundDefenderCombat.remaining);
+      const conquered = groundDefendersSurviving === 0;
+      const defenderCombat = {
+        remaining: conquered
+          ? emptyUnitCounts()
+          : addUnits(groundDefenderCombat.remaining, survivingDefenderAeronavalUnits),
+        losses: conquered
+          ? addUnits(
+              addUnits(groundDefenderCombat.losses, navalDefenderLossUnits),
+              survivingDefenderAeronavalUnits
+            )
+          : addUnits(groundDefenderCombat.losses, navalDefenderLossUnits),
+      };
+
+      const attackerLosses = navalAttackerLosses + groundAttackerLosses;
+      const defenderLosses = totalUnits(defenderCombat.losses);
+
       setTerritoryUnits(
         fromTerr,
         addUnits(subtractUnits(fromUnits, attackingUnits), attackerCombat.remaining)
@@ -3268,7 +3564,6 @@ export function applyAction(
       }
 
       const defenderId = toTerr.ownerId;
-      const conquered = toTerr.armies === 0;
       if (conquered) {
         currentPlayer.analytics = currentPlayer.analytics ?? createInitialPlayerAnalytics();
         currentPlayer.analytics.combatsWon = (currentPlayer.analytics.combatsWon ?? 0) + 1;
@@ -3301,10 +3596,9 @@ export function applyAction(
         encircledDefenderPenalty,
         coastalBombardmentBonus: coastalBombardment ? true : undefined,
         unescortedArtilleryPenalty: unescortedArtilleryPenalty ? true : undefined,
+        aeronavalBattle: aeronavalBattleResult,
+        amphibiousRepelled: aeronavalBattleResult ? false : undefined,
       };
-
-      const fromName = fromDef.namePt;
-      const toName = toDef.namePt;
       const capitalCombatTag = isDefendingCapital
         ? ` [⭐ Capital Fortificada${capitalTiesDefended > 0 ? ` (+${capitalTiesDefended} empates resistidos)` : ""}]`
         : "";

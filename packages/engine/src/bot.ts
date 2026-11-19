@@ -358,6 +358,14 @@ export function planNextBotAction(
             if (isSeaLink(from.id, n.id)) {
               const blockade = checkNavalBlockade(state, from.id, n.id, playerId);
               if (blockade.isBlockaded) return false;
+              const fromU = getTerritoryUnits(from);
+              const toU = getTerritoryUnits(n);
+              const defAeronaval = toU.navy + toU.aircraft;
+              const attAeronaval = fromU.navy + fromU.aircraft;
+              const attGround = fromU.infantry + fromU.tank + fromU.artillery;
+              if (defAeronaval > 0 && (attAeronaval < 1 || attGround < 1 || from.armies < 3)) {
+                return false;
+              }
             }
             return true;
           });

@@ -338,8 +338,13 @@
           {@const fromTerr = game.territories[selectedFromId]}
           {@const toTerr = game.territories[selectedToId]}
           {@const fromUnits = getTerritoryUnits(fromTerr)}
+          {@const toUnits = getTerritoryUnits(toTerr)}
           {@const isSea = isSeaLink(selectedFromId, selectedToId)}
           {@const navalCheck = isSea && myPlayerId ? checkNavalBlockade(game, selectedFromId, selectedToId, myPlayerId) : null}
+          {@const defenderAeronaval = toUnits.navy + toUnits.aircraft}
+          {@const selectedAttackerAeronaval = (selectedUnits.navy ?? 0) + (selectedUnits.aircraft ?? 0)}
+          {@const selectedAttackerGround = (selectedUnits.infantry ?? 0) + (selectedUnits.tank ?? 0) + (selectedUnits.artillery ?? 0)}
+          {@const isSeaBlockedWithoutEscort = isSea && (navalCheck?.isBlockaded || defenderAeronaval > 0) && selectedAttackerAeronaval < 1}
           {@const canArtillery = fromUnits.artillery > 0 && !fromTerr.artilleryBarrageFiredThisTurn}
           {@const canAir = hasTerritoryBuilding(fromTerr, "airfield") && fromUnits.aircraft > 0 && !fromTerr.airMissionFlownThisTurn && (myPlayerState?.resources?.oil ?? 0) > 0}
           {@const fromPlayer = game.players.find((p) => p.id === fromTerr?.ownerId)}
@@ -385,12 +390,17 @@
                 <span><strong>Blitzkrieg Ativo:</strong> Blindados sobreviventes podem liderar este segundo ataque imediato!</span>
               </div>
             {/if}
-            {#if navalCheck?.isBlockaded}
+            {#if isSeaBlockedWithoutEscort}
               <div class="tactical-intel-alert danger">
                 <Icon name="blockade" size={14} />
-                <span><strong>Bloqueio Naval:</strong> Frota inimiga ({navalCheck.defenderNavy} vs {navalCheck.attackerNavy}) impede o desembarque anfíbio.</span>
+                <span><strong>Bloqueio Aeronaval:</strong> Defensor possui {toUnits.navy} Marinha e {toUnits.aircraft} Aero. Selecione Marinha ou Aeronaves para travar a Batalha Aeronaval!</span>
               </div>
-            {:else if navalCheck && navalCheck.attackerNavy > 0}
+            {:else if isSea && defenderAeronaval > 0 && selectedAttackerAeronaval > 0}
+              <div class="tactical-intel-alert info">
+                <Icon name="anchor" size={14} />
+                <span><strong>Batalha Aeronaval Pré-Desembarque:</strong> {selectedUnits.navy} Marinha + {selectedUnits.aircraft} Aero contra {toUnits.navy} Marinha + {toUnits.aircraft} Aero no mar antes do combate terrestre!</span>
+              </div>
+            {:else if navalCheck && (navalCheck.attackerNavy > 0 || (selectedUnits.navy ?? 0) > 0)}
               <div class="tactical-intel-alert info">
                 <Icon name="anchor" size={14} />
                 <span><strong>Bombardeio Costeiro:</strong> Frotas aliadas no Porto concedem +1 ao dado mais alto!</span>
@@ -503,7 +513,7 @@
               <button
                 class="btn btn-attack"
                 style="flex: 1;"
-                disabled={selectedUnitTotal < 1 || (navalCheck?.isBlockaded ?? false)}
+                disabled={selectedUnitTotal < 1 || selectedAttackerGround < 1 || isSeaBlockedWithoutEscort}
                 onclick={confirmAttack}
               >
                 <Icon name="phase-attack" size={15} /> {t("combat_execute")}

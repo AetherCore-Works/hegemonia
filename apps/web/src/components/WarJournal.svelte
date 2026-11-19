@@ -329,6 +329,21 @@
           </div>
         </div>
 
+        {#if lastCombat.aeronavalBattle}
+          <div
+            class="last-stand-badge"
+            style={lastCombat.aeronavalBattle.attackerWon
+              ? "background: rgba(14, 165, 233, 0.18); border-color: #38bdf8; color: #bae6fd;"
+              : "background: rgba(239, 68, 68, 0.2); border-color: #ef4444; color: #fca5a5;"}
+            title="Batalha Estritamente Aeronaval (Marinha + Aero vs Marinha + Aero) antes do desembarque"
+          >
+            <Icon name="anchor" size={12} />
+            <span>
+              Batalha Aeronaval [{lastCombat.aeronavalBattle.attackerDice.join(",")}] vs [{lastCombat.aeronavalBattle.defenderDice.join(",")}] —
+              {lastCombat.aeronavalBattle.attackerWon ? "Bloqueio Rompido" : "Invasão Repelida no Mar"}
+            </span>
+          </div>
+        {/if}
         {#if lastCombat.lastStandBonus}
           <div class="last-stand-badge" title="Bônus de Mobilização Total / Última Resistência">
             <Icon name="capital" size={12} />

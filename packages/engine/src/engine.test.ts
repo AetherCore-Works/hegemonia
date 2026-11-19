@@ -2162,6 +2162,185 @@ describe("Asymmetric Naval Blockade & Coastal Bombardment (HEGEM-57)", () => {
     expect(state.lastCombat?.coastalBombardmentBonus).toBe(true);
     expect(state.lastCombat?.attackerDice[0]).toBe(5); // 4 + 1 = 5
   });
+
+  it("HEGEM-179: resolves strictly Aeronaval Battle (Navy + Air vs Navy + Air) before amphibious ground landing when attacker wins at sea", () => {
+    let state = createGame({
+      id: "g_hegem_179_win",
+      seed: "hegem-179-win",
+      players: [
+        { id: "p1", name: "Alice", color: "blue" },
+        { id: "p2", name: "Bob", color: "red" },
+      ],
+    });
+    state.round = 2;
+    state.phase = "attack";
+    state.turnIndex = state.players.findIndex((p) => p.id === "p1");
+    state.players[0].resources.oil = 3;
+    state.players[1].resources.oil = 3;
+
+    // Attacker in Brasil: 3 infantry, 1 aircraft, 1 navy (5 armies -> 1 infantry garrison + 2 infantry, 1 air, 1 navy attacking)
+    state.territories["brasil"].ownerId = "p1";
+    state.territories["brasil"].buildings = [
+      { type: "port", level: 1 },
+      { type: "airfield", level: 1 },
+    ];
+    state.territories["brasil"].units = unitCounts(3, 0, 0, 1, 1);
+    state.territories["brasil"].armies = 5;
+
+    // Defender in Nigéria: 1 infantry, 1 aircraft, 1 navy (3 armies)
+    state.territories["nigeria"].ownerId = "p2";
+    state.territories["nigeria"].buildings = [
+      { type: "port", level: 1 },
+      { type: "airfield", level: 1 },
+    ];
+    state.territories["nigeria"].units = unitCounts(1, 0, 0, 1, 1);
+    state.territories["nigeria"].armies = 3;
+
+    // Phase 1 (Aeronaval 2v2): Attacker rolls [6, 5], Defender rolls [3, 2] -> Defender loses 1 air + 1 navy, Attacker fleet survives
+    // Phase 2 (Ground 2v1): Attacker rolls [4, 3] (+1 coastal bombardment from surviving fleet -> [5, 3]), Defender rolls [4] -> Defender loses 1 infantry
+    const rolls = [6, 5, 3, 2, 4, 3, 4];
+    const rng = createSeededRng("hegem-179-sea-win");
+    rng.rollD6 = () => rolls.shift() ?? 6;
+
+    state = applyAction(
+      state,
+      "p1",
+      { type: "attack", fromTerritoryId: "brasil", toTerritoryId: "nigeria" },
+      rng
+    );
+
+    expect(state.lastCombat?.aeronavalBattle).toBeDefined();
+    expect(state.lastCombat?.aeronavalBattle?.attackerUnits).toEqual(unitCounts(0, 0, 0, 1, 1));
+    expect(state.lastCombat?.aeronavalBattle?.defenderUnits).toEqual(unitCounts(0, 0, 0, 1, 1));
+    expect(state.lastCombat?.aeronavalBattle?.attackerDice).toEqual([6, 5]);
+    expect(state.lastCombat?.aeronavalBattle?.defenderDice).toEqual([3, 2]);
+    expect(state.lastCombat?.aeronavalBattle?.attackerWon).toBe(true);
+    expect(state.lastCombat?.aeronavalBattle?.landingRepelled).toBe(false);
+    expect(state.lastCombat?.coastalBombardmentBonus).toBe(true);
+    expect(state.lastCombat?.attackerDice[0]).toBe(5); // 4 + 1 surviving fleet coastal bombardment
+    expect(state.lastCombat?.defenderDice).toEqual([4]); // only 1 ground defender rolled in ground battle
+    expect(state.lastCombat?.conquered).toBe(true);
+    expect(state.territories["nigeria"].ownerId).toBe("p1");
+  });
+
+  it("HEGEM-179: repels amphibious invasion at sea and retreats embarked ground troops when defender wins Aeronaval Battle", () => {
+    let state = createGame({
+      id: "g_hegem_179_repel",
+      seed: "hegem-179-repel",
+      players: [
+        { id: "p1", name: "Alice", color: "blue" },
+        { id: "p2", name: "Bob", color: "red" },
+      ],
+    });
+    state.round = 2;
+    state.phase = "attack";
+    state.turnIndex = state.players.findIndex((p) => p.id === "p1");
+    state.players[0].resources.oil = 3;
+    state.players[1].resources.oil = 3;
+
+    // Attacker in Brasil: 3 infantry, 1 aircraft, 1 navy (5 armies)
+    state.territories["brasil"].ownerId = "p1";
+    state.territories["brasil"].units = unitCounts(3, 0, 0, 1, 1);
+    state.territories["brasil"].armies = 5;
+
+    // Defender in Nigéria: 2 infantry, 1 aircraft, 1 navy (4 armies)
+    state.territories["nigeria"].ownerId = "p2";
+    state.territories["nigeria"].units = unitCounts(2, 0, 0, 1, 1);
+    state.territories["nigeria"].armies = 4;
+
+    // Aeronaval 2v2: Attacker rolls [2, 1], Defender rolls [6, 5] -> Attacker loses 1 air + 1 navy, invasion repelled
+    const rolls = [2, 1, 6, 5];
+    const rng = createSeededRng("hegem-179-sea-repel");
+    rng.rollD6 = () => rolls.shift() ?? 1;
+
+    state = applyAction(
+      state,
+      "p1",
+      {
+        type: "attack",
+        fromTerritoryId: "brasil",
+        toTerritoryId: "nigeria",
+        units: unitCounts(2, 0, 0, 1, 1),
+      },
+      rng
+    );
+
+    expect(state.lastCombat?.amphibiousRepelled).toBe(true);
+    expect(state.lastCombat?.conquered).toBe(false);
+    expect(state.lastCombat?.aeronavalBattle?.attackerWon).toBe(false);
+    expect(state.lastCombat?.aeronavalBattle?.landingRepelled).toBe(true);
+    expect(state.lastCombat?.attackerLossUnits).toEqual(unitCounts(0, 0, 0, 1, 1));
+    expect(state.lastCombat?.defenderLossUnits).toEqual(unitCounts(0, 0, 0, 0, 0));
+
+    // Embarked ground troops (2 infantry) retreated intact to Brasil (1 garrison + 2 retreated = 3 infantry)
+    expect(getTerritoryUnits(state.territories["brasil"])).toEqual(unitCounts(3, 0, 0, 0, 0));
+    // Defender ground and aeronaval units remain completely intact in Nigéria
+    expect(getTerritoryUnits(state.territories["nigeria"])).toEqual(unitCounts(2, 0, 0, 1, 1));
+    expect(state.territories["nigeria"].ownerId).toBe("p2");
+  });
+
+  it("HEGEM-179: enforces exclusive naval air defense (defender aircraft defend at sea alongside navy, but not in land battles)", () => {
+    let state = createGame({
+      id: "g_hegem_179_air_def",
+      seed: "hegem-179-air-def",
+      players: [
+        { id: "p1", name: "Alice", color: "blue" },
+        { id: "p2", name: "Bob", color: "red" },
+      ],
+    });
+    state.round = 2;
+    state.phase = "attack";
+    state.turnIndex = state.players.findIndex((p) => p.id === "p1");
+
+    // 1. Land battle (sao_paulo -> argentina): Defender has 1 infantry + 2 aircraft (3 armies total)
+    // Only the 1 infantry rolls defense dice on land (1 die, NOT 3 dice!)
+    state.territories["sao_paulo"].ownerId = "p1";
+    state.territories["sao_paulo"].units = unitCounts(3, 0, 0, 0, 0);
+    state.territories["sao_paulo"].armies = 3;
+
+    state.territories["argentina"].ownerId = "p2";
+    state.territories["argentina"].units = unitCounts(1, 0, 0, 2, 0);
+    state.territories["argentina"].armies = 3;
+
+    const landRolls = [2, 1, 5]; // Attacker 2 dice [2, 1], Defender 1 die [5]
+    const landRng = createSeededRng("hegem-179-land-air");
+    landRng.rollD6 = () => landRolls.shift() ?? 4;
+
+    state = applyAction(
+      state,
+      "p1",
+      { type: "attack", fromTerritoryId: "sao_paulo", toTerritoryId: "argentina" },
+      landRng
+    );
+
+    expect(state.lastCombat?.aeronavalBattle).toBeUndefined();
+    expect(state.lastCombat?.defenderDice).toHaveLength(1); // Aircraft did not roll defense dice in land battle
+
+    // 2. Maritime battle (brasil -> nigeria): Defender has 1 infantry + 2 aircraft (0 navy)
+    // Defender's 2 aircraft act directly in the Aeronaval Battle at sea (rolling 2 dice)
+    state.territories["brasil"].ownerId = "p1";
+    state.territories["brasil"].units = unitCounts(2, 0, 0, 0, 2);
+    state.territories["brasil"].armies = 4;
+
+    state.territories["nigeria"].ownerId = "p2";
+    state.territories["nigeria"].units = unitCounts(1, 0, 0, 2, 0);
+    state.territories["nigeria"].armies = 3;
+
+    const seaRolls = [2, 1, 6, 5]; // Attacker 2 navies [2, 1] vs Defender 2 aircraft [6, 5]
+    const seaRng = createSeededRng("hegem-179-sea-air");
+    seaRng.rollD6 = () => seaRolls.shift() ?? 4;
+
+    state = applyAction(
+      state,
+      "p1",
+      { type: "attack", fromTerritoryId: "brasil", toTerritoryId: "nigeria" },
+      seaRng
+    );
+
+    expect(state.lastCombat?.aeronavalBattle).toBeDefined();
+    expect(state.lastCombat?.aeronavalBattle?.defenderDice).toHaveLength(2);
+    expect(state.lastCombat?.amphibiousRepelled).toBe(true);
+  });
 });
 
 describe("Tanks, Blitzkrieg Spearhead & Infantry Assault Fatigue (HEGEM-25)", () => {

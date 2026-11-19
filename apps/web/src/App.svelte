@@ -24,6 +24,7 @@
     getTerritoryUnits,
     hasTerritoryBuilding,
     isConnectedByFriendlyPath,
+    selectMaritimeAttackUnits,
     selectUnits,
     subtractUnits,
     totalUnits,
@@ -1379,7 +1380,12 @@
       const tankCount = Math.min(tUnits.tank, Math.max(0, territory.armies - 1));
       selectedUnits = { ...emptyUnitCounts(), tank: tankCount };
     } else {
-      selectedUnits = selectUnits(getTerritoryUnits(territory), Math.max(0, territory.armies - 1));
+      const avail = getTerritoryUnits(territory);
+      const maxAttack = Math.max(0, territory.armies - 1);
+      selectedUnits =
+        selectedToId && isSeaLink(selectedFromId, selectedToId)
+          ? selectMaritimeAttackUnits(avail, maxAttack)
+          : selectUnits(avail, maxAttack);
     }
   }
 
