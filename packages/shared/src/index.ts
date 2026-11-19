@@ -495,6 +495,19 @@ export interface PendingConquest {
   wasBlitzkriegAssault?: boolean;
 }
 
+export interface AeronavalBattleResult {
+  attackerDice: number[];
+  defenderDice: number[];
+  attackerLosses: number;
+  defenderLosses: number;
+  attackerUnits: UnitCounts;
+  defenderUnits: UnitCounts;
+  attackerLossUnits: UnitCounts;
+  defenderLossUnits: UnitCounts;
+  attackerWon: boolean;
+  landingRepelled: boolean;
+}
+
 export interface CombatRollResult {
   fromTerritoryId: string;
   toTerritoryId: string;
@@ -524,6 +537,10 @@ export interface CombatRollResult {
   artillerySuppressionBonus?: boolean;
   artillerySiegeBonus?: boolean;
   artillerySaturationBonus?: boolean;
+  /** Strictly Aeronaval Battle (Navy + Air vs Navy + Air) resolved prior to amphibious landing (HEGEM-179) */
+  aeronavalBattle?: AeronavalBattleResult;
+  /** Whether the amphibious invasion was repelled at sea before ground combat could occur (HEGEM-179) */
+  amphibiousRepelled?: boolean;
 }
 
 export interface TacticalStrikeEvent {
