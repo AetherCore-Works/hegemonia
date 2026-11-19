@@ -1,6 +1,7 @@
 import { Room, type Client } from "@colyseus/core";
 import { randomBytes } from "node:crypto";
 import {
+  DOCTRINES,
   DOCTRINE_LIST,
   DoctrineIdSchema,
   GameActionSchema,
@@ -191,23 +192,46 @@ export class HegemoniaRoom extends Room {
       if (!parsed.success) return;
       const player = this.lobbyPlayers.find((p) => p.sessionId === client.sessionId);
       if (player) {
-        const otherDoctrines = this.lobbyPlayers
-          .filter((p) => p.sessionId !== client.sessionId)
+        const otherHumanDoctrines = this.lobbyPlayers
+          .filter((p) => p.sessionId !== client.sessionId && !p.isBot)
           .map((p) => p.doctrineId);
         if (
           !isDoctrineAvailableInLobby(
             parsed.data,
-            otherDoctrines,
+            otherHumanDoctrines,
             this.customRules.doctrineLimitEnabled
           )
         ) {
-          const limit = parsed.data === "extermination" ? 1 : 2;
+          const limit = DOCTRINES[parsed.data]?.maxPerLobby ?? 2;
           client.send("error_msg", {
             message: `Limite atingido: esta doutrina permite no máximo ${limit} general(is) por partida.`,
           });
           return;
         }
         player.doctrineId = parsed.data;
+
+        // Reassign any bots whose auto-assigned doctrine now exceeds maxPerLobby
+        if (this.customRules.doctrineLimitEnabled !== false) {
+          const acceptedDoctrines: (DoctrineId | null | undefined)[] = this.lobbyPlayers
+            .filter((p) => !p.isBot)
+            .map((p) => p.doctrineId);
+          for (const botPlayer of this.lobbyPlayers) {
+            if (!botPlayer.isBot) continue;
+            if (
+              botPlayer.doctrineId &&
+              isDoctrineAvailableInLobby(botPlayer.doctrineId, acceptedDoctrines, true)
+            ) {
+              acceptedDoctrines.push(botPlayer.doctrineId);
+            } else {
+              const replacement = DOCTRINE_LIST.find((d) =>
+                isDoctrineAvailableInLobby(d.id, acceptedDoctrines, true)
+              );
+              botPlayer.doctrineId = replacement ? replacement.id : null;
+              if (botPlayer.doctrineId) acceptedDoctrines.push(botPlayer.doctrineId);
+            }
+          }
+        }
+
         this.broadcastRoomState();
       }
     });
@@ -268,7 +292,24 @@ export class HegemoniaRoom extends Room {
         ALL_COLORS.find((c) => !this.lobbyPlayers.some((p) => p.color === c)) ?? "black";
       const botIndex = this.lobbyPlayers.filter((p) => p.isBot).length + 1;
       const botToken = `bot_${botIndex}_${randomBytes(3).toString("hex")}`;
-      const botDoctrine = DOCTRINE_LIST[(botIndex - 1) % DOCTRINE_LIST.length].id;
+      const existingDoctrines = this.lobbyPlayers.map((p) => p.doctrineId);
+      let botDoctrine = DOCTRINE_LIST[(botIndex - 1) % DOCTRINE_LIST.length].id;
+      if (
+        !isDoctrineAvailableInLobby(
+          botDoctrine,
+          existingDoctrines,
+          this.customRules.doctrineLimitEnabled
+        )
+      ) {
+        const availableDoc = DOCTRINE_LIST.find((d) =>
+          isDoctrineAvailableInLobby(
+            d.id,
+            existingDoctrines,
+            this.customRules.doctrineLimitEnabled
+          )
+        );
+        if (availableDoc) botDoctrine = availableDoc.id;
+      }
       this.lobbyPlayers.push({
         token: botToken,
         sessionId: botToken,
@@ -382,16 +423,53 @@ export class HegemoniaRoom extends Room {
         }
 
         try {
-          const players = this.lobbyPlayers.map((p, idx) => ({
-            id: p.token,
-            name: p.name,
-            color: p.color,
-            doctrineId: this.customRules.classicMode
-              ? null
-              : (p.doctrineId ??
-                (p.isBot ? DOCTRINE_LIST[idx % DOCTRINE_LIST.length].id : null)),
-            recentObjectiveIds: this.recentObjectivesByUser.get(p.userId ?? p.token),
-          }));
+          const assignedDoctrines: (DoctrineId | null | undefined)[] = [];
+          if (!this.customRules.classicMode) {
+            for (const p of this.lobbyPlayers) {
+              if (!p.isBot && p.doctrineId) {
+                assignedDoctrines.push(p.doctrineId);
+              }
+            }
+          }
+          const players = this.lobbyPlayers.map((p, idx) => {
+            let finalDoctrineId: DoctrineId | null = null;
+            if (!this.customRules.classicMode) {
+              if (!p.isBot) {
+                finalDoctrineId = p.doctrineId ?? null;
+              } else {
+                const preferred = p.doctrineId ?? DOCTRINE_LIST[idx % DOCTRINE_LIST.length].id;
+                if (
+                  isDoctrineAvailableInLobby(
+                    preferred,
+                    assignedDoctrines,
+                    this.customRules.doctrineLimitEnabled
+                  )
+                ) {
+                  finalDoctrineId = preferred;
+                } else {
+                  const fallback = DOCTRINE_LIST.find((d) =>
+                    isDoctrineAvailableInLobby(
+                      d.id,
+                      assignedDoctrines,
+                      this.customRules.doctrineLimitEnabled
+                    )
+                  );
+                  finalDoctrineId = fallback ? fallback.id : preferred;
+                }
+                if (finalDoctrineId) {
+                  p.doctrineId = finalDoctrineId;
+                  assignedDoctrines.push(finalDoctrineId);
+                }
+              }
+            }
+            return {
+              id: p.token,
+              name: p.name,
+              color: p.color,
+              doctrineId: finalDoctrineId,
+              recentObjectiveIds: this.recentObjectivesByUser.get(p.userId ?? p.token),
+            };
+          });
           const provisional = createGame({
             id: "pending",
             seed: this.secretSeed,
@@ -650,12 +728,18 @@ export class HegemoniaRoom extends Room {
     }
     const freeColor = ALL_COLORS.find((c) => !this.lobbyPlayers.some((p) => p.color === c)) ?? "blue";
     const parsedDoc = DoctrineIdSchema.safeParse(options?.doctrineId);
+    const otherHumanDocs = this.lobbyPlayers.filter((p) => !p.isBot).map((p) => p.doctrineId);
+    const initialDoctrineId =
+      parsedDoc.success &&
+      isDoctrineAvailableInLobby(parsedDoc.data, otherHumanDocs, this.customRules.doctrineLimitEnabled)
+        ? parsedDoc.data
+        : null;
     this.lobbyPlayers.push({
       token,
       sessionId: client.sessionId,
       name,
       color: freeColor,
-      doctrineId: parsedDoc.success ? parsedDoc.data : null,
+      doctrineId: initialDoctrineId,
       isHost: this.lobbyPlayers.length === 0,
       isBot: false,
       connected: true,
@@ -1093,7 +1177,7 @@ export class HegemoniaRoom extends Room {
         token: p.token,
         name: p.name,
         color: p.color,
-        doctrineId: this.gameState || p.token === viewerToken ? (p.doctrineId ?? null) : null,
+        doctrineId: p.doctrineId ?? null,
         hasChosenDoctrine: Boolean(p.doctrineId),
         isHost: p.isHost,
         isBot: p.isBot,

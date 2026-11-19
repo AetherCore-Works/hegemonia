@@ -1182,7 +1182,10 @@
           id: "bot2",
           name: "General IA #2",
           color: availableColors[1] ?? "green",
-          doctrineId: "tall_sovereign" as const,
+          doctrineId:
+            selectedDoctrineId === "tall_sovereign" || selectedDoctrineId === "defense_in_depth"
+              ? ("naval_supremacy" as const)
+              : ("tall_sovereign" as const),
         },
       ];
       const newGame = createGame({

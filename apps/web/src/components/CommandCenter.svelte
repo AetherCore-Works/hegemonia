@@ -706,7 +706,7 @@
                 <div class="doctrine-cards-grid">
                   {#each DOCTRINE_LIST as doc}
                     {@const isSelected = selectedDoctrineId === doc.id}
-                    {@const otherDoctrines = lobbyPlayers.filter((p) => p.token !== myPlayerId).map((p) => p.doctrineId)}
+                    {@const otherDoctrines = lobbyPlayers.filter((p) => p.token !== myPlayerId && !p.isBot).map((p) => p.doctrineId)}
                     {@const isAvailable = isSelected || isDoctrineAvailableInLobby(doc.id, otherDoctrines, customRules.doctrineLimitEnabled)}
                     <button
                       type="button"

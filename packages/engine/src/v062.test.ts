@@ -78,6 +78,10 @@ describe("Hegemonia v0.6.2 Features", () => {
     it("applies economyMultiplier, buildingCostMultiplier, and optional doctrineLimitEnabled", () => {
       expect(isDoctrineAvailableInLobby("extermination", ["extermination"], true)).toBe(false);
       expect(isDoctrineAvailableInLobby("extermination", ["extermination"], false)).toBe(true);
+      expect(isDoctrineAvailableInLobby("tall_sovereign", ["tall_sovereign"], true)).toBe(false);
+      expect(isDoctrineAvailableInLobby("defense_in_depth", ["tall_sovereign"], true)).toBe(false);
+      expect(isDoctrineAvailableInLobby("tall_sovereign", ["defense_in_depth"], true)).toBe(false);
+      expect(isDoctrineAvailableInLobby("tall_sovereign", ["tall_sovereign"], false)).toBe(true);
 
       const standard = createGame({ id: "eco-1", seed: "eco-s", players });
       const boosted = createGame({

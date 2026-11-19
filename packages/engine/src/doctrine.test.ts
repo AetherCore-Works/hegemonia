@@ -217,3 +217,109 @@ describe("HEGEM-139: Doutrinas Militares - Ícone de Capacete Militar na Doutrin
     expect(updated.log.some((l) => l.includes("Comando Clássico"))).toBe(true);
   });
 });
+
+describe("HEGEM-177: Limitar doutrina Tall (tall_sovereign e defense_in_depth) a 1 por partida igual Extermínio", () => {
+  it("sets maxPerLobby to 1 for both tall_sovereign and defense_in_depth", () => {
+    expect(DOCTRINES.tall_sovereign.maxPerLobby).toBe(1);
+    expect(DOCTRINES.defense_in_depth.maxPerLobby).toBe(1);
+    expect(DOCTRINES.extermination.maxPerLobby).toBe(1);
+  });
+
+  it("blocks a second player in the lobby from picking tall_sovereign or defense_in_depth once 1 is selected", () => {
+    expect(isDoctrineAvailableInLobby("tall_sovereign", [])).toBe(true);
+    expect(isDoctrineAvailableInLobby("defense_in_depth", [])).toBe(true);
+
+    // When 1 player already picked tall_sovereign, neither tall_sovereign nor defense_in_depth is available
+    expect(isDoctrineAvailableInLobby("tall_sovereign", ["tall_sovereign"])).toBe(false);
+    expect(isDoctrineAvailableInLobby("defense_in_depth", ["tall_sovereign"])).toBe(false);
+
+    // When 1 player already picked defense_in_depth, neither tall_sovereign nor defense_in_depth is available
+    expect(isDoctrineAvailableInLobby("tall_sovereign", ["defense_in_depth"])).toBe(false);
+    expect(isDoctrineAvailableInLobby("defense_in_depth", ["defense_in_depth"])).toBe(false);
+
+    // When doctrineLimitEnabled is disabled in Custom Sandbox, multiple players can pick it
+    expect(isDoctrineAvailableInLobby("tall_sovereign", ["tall_sovereign"], false)).toBe(true);
+    expect(isDoctrineAvailableInLobby("defense_in_depth", ["tall_sovereign"], false)).toBe(true);
+  });
+
+  it("enforces the 1-player limit during Round 1 select_doctrine action", () => {
+    const rng = createSeededRng("hegem177-tall-limit-seed");
+    let state = createGame({
+      id: "match-hegem177",
+      seed: "hegem177-tall-limit-seed",
+      players: [
+        { id: "p1", name: "BuilderOne", color: "blue" },
+        { id: "p2", name: "BuilderTwo", color: "red" },
+      ],
+    });
+
+    // Clear incompatible objectives so only lobby limit is tested
+    for (const p of state.players) {
+      p.objective = {
+        id: "obj_fortified_bastion",
+        descriptionPt: "Bastião Inexpugnável",
+        descriptionEn: "Impregnable Bastion",
+        rule: {
+          type: "fortified_bastion",
+          bastionTerritoryCount: 4,
+          roundsRequired: 5,
+        },
+        allowedDoctrines: ["tall_sovereign", "defense_in_depth"],
+      };
+    }
+
+    // 1st player picks tall_sovereign -> succeeds
+    state = applyAction(
+      state,
+      "p1",
+      { type: "select_doctrine", doctrineId: "tall_sovereign" },
+      rng,
+      CLASSIC_MAP
+    );
+    expect(state.players.find((p) => p.id === "p1")!.doctrineId).toBe("tall_sovereign");
+
+    // 2nd player tries to pick tall_sovereign or defense_in_depth -> rejected (limit 1 per match)
+    expect(() =>
+      applyAction(
+        state,
+        "p2",
+        { type: "select_doctrine", doctrineId: "tall_sovereign" },
+        rng,
+        CLASSIC_MAP
+      )
+    ).toThrow(/limite de generais com a doutrina/i);
+
+    expect(() =>
+      applyAction(
+        state,
+        "p2",
+        { type: "select_doctrine", doctrineId: "defense_in_depth" },
+        rng,
+        CLASSIC_MAP
+      )
+    ).toThrow(/limite de generais com a doutrina/i);
+  });
+
+  it("re-assigns conflicting bot doctrine in createGame when human and bot both hold tall_sovereign", () => {
+    const state = createGame({
+      id: "match-hegem177-bots",
+      seed: "hegem177-bots-seed",
+      players: [
+        { id: "human_1", name: "Dicktador GRS", color: "blue", doctrineId: "tall_sovereign" },
+        { id: "bot_1", name: "General IA #1", color: "red", doctrineId: "superior_firepower" },
+        { id: "bot_2", name: "General IA #2", color: "green", doctrineId: "tall_sovereign" },
+        { id: "bot_3", name: "General IA #3", color: "dark_green", doctrineId: "naval_supremacy" },
+        { id: "bot_4", name: "General IA #4", color: "yellow", doctrineId: "blitzkrieg" },
+        { id: "bot_5", name: "General IA #5", color: "orange", doctrineId: "guerrilla" },
+      ],
+    });
+
+    const tallPlayers = state.players.filter(
+      (p) => p.doctrineId === "tall_sovereign" || p.doctrineId === "defense_in_depth"
+    );
+    expect(tallPlayers).toHaveLength(1);
+    expect(tallPlayers[0].id).toBe("human_1");
+    expect(state.players.find((p) => p.id === "bot_2")!.doctrineId).not.toBe("tall_sovereign");
+    expect(state.players.find((p) => p.id === "bot_2")!.doctrineId).not.toBe("defense_in_depth");
+  });
+});
