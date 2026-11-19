@@ -168,23 +168,26 @@
 
   function applyPreset(presetId: Exclude<RulesPresetId, "custom">) {
     if (!amIHost || !onUpdateCustomRules) return;
-    const preset = RULES_PRESETS[presetId];
+    const targetPresetId =
+      presetId === "classic_war" && customRules.classicMode ? "standard" : presetId;
+    const preset = RULES_PRESETS[targetPresetId];
     if (!preset) return;
     onUpdateCustomRules(
       normalizeCustomRules({
         ...preset.config,
-        preset: presetId,
+        preset: targetPresetId,
       })
     );
   }
 
   function patchCustomRules(patch: Partial<CustomRulesConfig>) {
     if (!amIHost || !onUpdateCustomRules) return;
+    const nextClassic = patch.classicMode ?? customRules.classicMode;
     onUpdateCustomRules(
       normalizeCustomRules({
         ...customRules,
         ...patch,
-        preset: "custom",
+        preset: nextClassic ? "classic_war" : "custom",
       })
     );
   }
@@ -794,7 +797,10 @@
 
             <div class="presets-row">
               {#each Object.values(RULES_PRESETS) as preset}
-                {@const isActive = customRules.preset === preset.id}
+                {@const isActive =
+                  preset.id === "classic_war"
+                    ? customRules.classicMode
+                    : !customRules.classicMode && customRules.preset === preset.id}
                 <button
                   type="button"
                   class="preset-card-btn"
@@ -814,19 +820,6 @@
             </div>
 
             <div class="sandbox-controls-grid">
-              <label class="sandbox-field toggle-field">
-                <span>Modo Clássico (War/Risk Puro)</span>
-                <input
-                  type="checkbox"
-                  checked={customRules.classicMode}
-                  disabled={!amIHost}
-                  onchange={(e) =>
-                    patchCustomRules({
-                      classicMode: (e.currentTarget as HTMLInputElement).checked,
-                    })}
-                />
-              </label>
-
               <label class="sandbox-field toggle-field">
                 <span>Limite de Doutrina por Sala</span>
                 <input
