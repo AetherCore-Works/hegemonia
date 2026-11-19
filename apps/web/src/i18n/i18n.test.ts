@@ -168,7 +168,7 @@ describe("i18n Content Resolvers", () => {
     expect(getObjectiveDescription(stubObj as any)).toContain("World Chaos & Apocalypse");
   });
 
-  it("should ensure all objectives in ALL_OBJECTIVES have localized titles and descriptions", () => {
+  it("should ensure all objectives in ALL_OBJECTIVES have localized titles and descriptions matching map definitions (HEGEM-171)", () => {
     for (const locale of ["pt-BR", "en"] as const) {
       i18n.setLocale(locale);
       for (const obj of ALL_OBJECTIVES) {
@@ -183,6 +183,9 @@ describe("i18n Content Resolvers", () => {
         expect(desc).toBeDefined();
         expect(desc.length).toBeGreaterThan(10);
         expect(desc.startsWith("obj_")).toBe(false);
+
+        const expectedDesc = locale === "en" ? obj.descriptionEn : obj.descriptionPt;
+        expect(desc).toBe(expectedDesc);
       }
     }
   });

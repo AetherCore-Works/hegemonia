@@ -2474,7 +2474,7 @@ export function applyAction(
         steel_mine: "Mina de Aço",
         oil_well: "Poço Petrolífero",
         refinery: "Refinaria Petroquímica",
-        wonder: "Maravilha do Bastião",
+        wonder: "Cidadela do Dia Final",
       };
       const bName = buildingNamesPt[action.buildingType] ?? action.buildingType;
       const refundSummary =
@@ -2543,7 +2543,7 @@ export function applyAction(
             steel_mine: "Mina de Aço",
             oil_well: "Poço Petrolífero",
             refinery: "Refinaria",
-            wonder: "Maravilha Estratégica",
+            wonder: "Cidadela do Dia Final",
           };
           throw new Error(
             `O recrutamento desta unidade exige ${requirementNames[requirement]} no território.`
@@ -3062,7 +3062,7 @@ export function applyAction(
             steel_mine: "Mina de Aço",
             oil_well: "Poço Petrolífero",
             refinery: "Refinaria",
-            wonder: "Maravilha Estratégica",
+            wonder: "Cidadela do Dia Final",
           };
           if (targetBuilding.level > 1) {
             targetBuilding.level -= 1;
@@ -3712,7 +3712,7 @@ export function applyAction(
             steel_mine: "Mina de Aço",
             oil_well: "Poço Petrolífero",
             refinery: "Refinaria",
-            wonder: "Maravilha Estratégica",
+            wonder: "Cidadela do Dia Final",
           };
 
           const survivingBuildings: typeof toTerr.buildings = [];
@@ -4881,32 +4881,6 @@ function advanceTurn(state: GameState, rng: SeededRng, map: GameMapDef): void {
             state.log.push(
               `⚔️ SUPERPOTÊNCIA MILITAR: ${armyLeader.name} possui o maior exército do mundo (${maxArmies} div.) e gera alarme internacional (+2% Infâmia).`
             );
-          }
-        }
-      }
-
-      // HEGEM-117: Verificação e Alerta Global de Bastião Fortificado
-      for (const p of state.players) {
-        if (!p.eliminated && p.objective?.rule.type === "fortified_bastion") {
-          const rule = p.objective.rule;
-          const fortifiedCount = Object.values(state.territories).filter(
-            (t) =>
-              t.ownerId === p.id &&
-              (t.buildings ?? []).some((b) => b.type === "fortification")
-          ).length;
-
-          if (fortifiedCount >= rule.bastionTerritoryCount) {
-            p.bastionRoundsHeld = (p.bastionRoundsHeld ?? 0) + 1;
-            state.log.push(
-              `🏰 ALERTA GLOBAL — BASTIÃO SOBERANO: ${p.name} mantém ${fortifiedCount} fortalezas ativas (${p.bastionRoundsHeld}/${rule.roundsRequired} rodadas)! As nações rivais devem romper as defesas para impedir a vitória por soberania!`
-            );
-          } else {
-            if ((p.bastionRoundsHeld ?? 0) > 0) {
-              state.log.push(
-                `💥 BASTIÃO ROMPIDO: As fortalezas de ${p.name} foram reduzidas para ${fortifiedCount}. A contagem defensiva foi reiniciada!`
-              );
-            }
-            p.bastionRoundsHeld = 0;
           }
         }
       }
