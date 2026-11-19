@@ -57,7 +57,7 @@ export const DOCTRINES: Record<DoctrineId, DoctrineDef> = {
       "Indústria e Fortaleza Nv. 2 exclusivas (+100% commodities em 3-5 territórios). Penalidade de Overextension (-15% economia e -1 DEF por território a partir do 6.º).",
     summaryEn:
       "Exclusive Lv. 2 Industry and Fortress (+100% commodities in 3-5 territories). Overextension penalty (-15% economy and -1 DEF per territory beyond 5th).",
-    maxPerLobby: 2,
+    maxPerLobby: 1,
     orderIndex: 2,
   },
   naval_supremacy: {
@@ -158,7 +158,7 @@ export const DOCTRINES: Record<DoctrineId, DoctrineDef> = {
       "Indústria e Fortaleza Nv. 2 exclusivas (+100% commodities em 3-5 territórios). Penalidade de Overextension (-15% economia e -1 DEF por território a partir do 6.º).",
     summaryEn:
       "Exclusive Lv. 2 Industry and Fortress (+100% commodities in 3-5 territories). Overextension penalty (-15% economy and -1 DEF per territory beyond 5th).",
-    maxPerLobby: 2,
+    maxPerLobby: 1,
     orderIndex: 8,
   },
   fleet_in_being: {

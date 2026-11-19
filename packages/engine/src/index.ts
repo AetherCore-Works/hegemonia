@@ -1,4 +1,5 @@
 import {
+  CORE_DOCTRINE_LIST,
   DOCTRINES,
   isDoctrineAvailableInLobby,
   isObjectiveCompatibleWithDoctrine,
@@ -1261,6 +1262,44 @@ export function createGame(opts: CreateGameOptions): GameState {
   });
 
   const rulesConfig = normalizeCustomRules(opts.rulesConfig);
+  const resolvedDoctrineByPlayerId = new Map<string, DoctrineId | null>();
+  if (!rulesConfig.classicMode) {
+    const assignedDoctrines: (DoctrineId | null | undefined)[] = [];
+    // Prioritize non-bot players first so bots never steal a human player's 1-per-lobby doctrine (HEGEM-177)
+    const prioritizedPlayers = [...opts.players].sort((a, b) => {
+      const aIsBot = a.id.startsWith("bot") || a.name.startsWith("General IA #");
+      const bIsBot = b.id.startsWith("bot") || b.name.startsWith("General IA #");
+      return Number(aIsBot) - Number(bIsBot);
+    });
+    for (const p of prioritizedPlayers) {
+      if (!p.doctrineId) {
+        resolvedDoctrineByPlayerId.set(p.id, null);
+        continue;
+      }
+      if (
+        isDoctrineAvailableInLobby(
+          p.doctrineId,
+          assignedDoctrines,
+          rulesConfig.doctrineLimitEnabled
+        )
+      ) {
+        resolvedDoctrineByPlayerId.set(p.id, p.doctrineId);
+        assignedDoctrines.push(p.doctrineId);
+      } else {
+        const fallback = CORE_DOCTRINE_LIST.find((d) =>
+          isDoctrineAvailableInLobby(
+            d.id,
+            assignedDoctrines,
+            rulesConfig.doctrineLimitEnabled
+          )
+        );
+        const nextDoc = fallback ? fallback.id : null;
+        resolvedDoctrineByPlayerId.set(p.id, nextDoc);
+        if (nextDoc) assignedDoctrines.push(nextDoc);
+      }
+    }
+  }
+
   const rawPool = opts.objectives
     ? [...opts.objectives]
     : rulesConfig.classicMode
@@ -1270,7 +1309,9 @@ export function createGame(opts: CreateGameOptions): GameState {
   const assignedObjectiveIds = new Set<string>();
 
   const players: PlayerState[] = shuffledPlayers.map((p) => {
-    const effectiveDoctrine = rulesConfig.classicMode ? null : (p.doctrineId ?? null);
+    const effectiveDoctrine = rulesConfig.classicMode
+      ? null
+      : (resolvedDoctrineByPlayerId.get(p.id) ?? null);
     const recentSet = new Set(p.recentObjectiveIds ?? []);
     const startingTerrs = playerOwnedTerritoryIds[p.id] ?? [];
 
@@ -1288,20 +1329,20 @@ export function createGame(opts: CreateGameOptions): GameState {
     };
 
     const hasAffinity = (obj: ObjectiveCard): boolean => {
-      if (!p.doctrineId) return false;
-      if (obj.allowedDoctrines && obj.allowedDoctrines.includes(p.doctrineId)) return true;
-      if (p.doctrineId === "tall_sovereign" || p.doctrineId === "defense_in_depth") {
+      if (!effectiveDoctrine) return false;
+      if (obj.allowedDoctrines && obj.allowedDoctrines.includes(effectiveDoctrine)) return true;
+      if (effectiveDoctrine === "tall_sovereign" || effectiveDoctrine === "defense_in_depth") {
         return (
           obj.rule.type === "fortified_bastion" ||
           obj.rule.type === "economic_hegemony" ||
           obj.rule.type === "diplomatic_pax"
         );
       }
-      if (p.doctrineId === "extermination") {
+      if (effectiveDoctrine === "extermination") {
         return obj.rule.type === "eliminate_players";
       }
       // HEGEM-125: Classic Command (superior_firepower ID) prioritizes Classic War conquest objectives
-      if (p.doctrineId === "superior_firepower") {
+      if (effectiveDoctrine === "superior_firepower") {
         return CLASSIC_OBJECTIVES.some((co) => co.id === obj.id);
       }
       return false;
@@ -1313,7 +1354,7 @@ export function createGame(opts: CreateGameOptions): GameState {
     const prioritizedPool = [...freshEligible, ...recentEligible];
 
     let chosenObjective: ObjectiveCard | undefined;
-    if (p.doctrineId) {
+    if (effectiveDoctrine) {
       chosenObjective = prioritizedPool.find(hasAffinity);
     }
 
@@ -1378,7 +1419,7 @@ export function createGame(opts: CreateGameOptions): GameState {
       isCapitalLost: false,
       economicPenaltyMultiplier: 1.0,
       moralePenalty: 0,
-      infamy: p.doctrineId === "extermination" ? 50 : 0,
+      infamy: effectiveDoctrine === "extermination" ? 50 : 0,
       resources: { money: 0, steel: 0, oil: 0, gold: 0 },
       boughtCardWithGoldThisTurn: false,
       analytics: createInitialPlayerAnalytics(),
