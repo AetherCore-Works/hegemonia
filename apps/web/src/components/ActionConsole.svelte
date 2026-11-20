@@ -470,7 +470,10 @@
                 {#if canArtillery}
                   <button
                     class="btn secondary-btn support-mission-btn"
-                    title="Disparo de saturação sem contra-ataque: 4+ degrada fortaleza ou destrói unidades"
+                    use:tooltip={{
+                      text: t("unit_tooltip_artillery_title"),
+                      subtext: `Disparo de saturação sem contra-ataque (4+ degrada fortaleza). ${t("unit_tooltip_artillery_desc")}`,
+                    }}
                     onclick={confirmArtilleryBarrage}
                   >
                     <Icon name="artillery" size={13} />
@@ -480,7 +483,10 @@
                 {#if canAir}
                   <button
                     class="btn secondary-btn support-mission-btn"
-                    title="Apoio Aéreo Aproximado: +1 dado no próximo ataque a este território"
+                    use:tooltip={{
+                      text: t("unit_tooltip_aircraft_title"),
+                      subtext: `Apoio Aéreo Aproximado (+1 dado no próximo ataque). ${t("unit_tooltip_aircraft_desc")}`,
+                    }}
                     onclick={() => confirmAirMission("cas")}
                   >
                     <Icon name="aircraft" size={13} />
@@ -488,7 +494,10 @@
                   </button>
                   <button
                     class="btn secondary-btn support-mission-btn"
-                    title="Bombardeio Estratégico: 5+ degrada construções inimigas"
+                    use:tooltip={{
+                      text: t("unit_tooltip_aircraft_title"),
+                      subtext: `Bombardeio Estratégico (5+ degrada construções). ${t("unit_tooltip_aircraft_desc")}`,
+                    }}
                     onclick={() => confirmAirMission("bombardment")}
                   >
                     <Icon name="bombardment" size={13} />
@@ -496,7 +505,10 @@
                   </button>
                   <button
                     class="btn secondary-btn support-mission-btn"
-                    title="Reconhecimento Aéreo: revela dados secretos e espionagem"
+                    use:tooltip={{
+                      text: t("unit_tooltip_aircraft_title"),
+                      subtext: `Reconhecimento Aéreo (revela dados secretos). ${t("unit_tooltip_aircraft_desc")}`,
+                    }}
                     onclick={() => confirmAirMission("recon")}
                   >
                     <Icon name="recon-plane" size={13} />

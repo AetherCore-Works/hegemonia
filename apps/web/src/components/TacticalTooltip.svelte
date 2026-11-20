@@ -9,6 +9,7 @@
   <div
     class="tactical-tooltip"
     class:near-top={isNearTop}
+    class:danger={tip.variant === "danger"}
     style="left: {tip.x}px; top: {tip.y}px;"
     role="tooltip"
   >
@@ -53,6 +54,17 @@
     color: #cbd5e1;
     margin-top: 3px;
     font-family: var(--font-mono);
+  }
+  .tactical-tooltip.danger {
+    background: rgba(35, 10, 14, 0.96);
+    border-color: rgba(248, 113, 113, 0.78);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.85), 0 0 14px rgba(239, 68, 68, 0.32);
+  }
+  .tactical-tooltip.danger .tt-text {
+    color: #fca5a5;
+  }
+  .tactical-tooltip.danger .tt-sub {
+    color: #fecaca;
   }
   @keyframes ttFadeIn {
     from {

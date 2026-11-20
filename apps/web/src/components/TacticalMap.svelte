@@ -520,8 +520,12 @@
     new Set(combatAnimations.map((a) => a.toTerritoryId))
   );
 
+  const isMyTurn = $derived(
+    Boolean(myPlayerId && game.players[game.currentPlayerIndex]?.id === myPlayerId)
+  );
+
   const maneuverReach = $derived(
-    game.phase === "maneuver" && selectedFromId && myPlayerId
+    isMyTurn && game.phase === "maneuver" && selectedFromId && myPlayerId
       ? getReachableManeuverDistances(game, selectedFromId, myPlayerId, CLASSIC_MAP)
       : { landDistances: {} as Record<string, number>, airfieldTargets: [] as string[], aircraftTargets: [] as string[], maxLandDistance: 0 }
   );
@@ -977,6 +981,7 @@
               {@const isSelected = selectedFromId === t.id || selectedToId === t.id}
               {@const fromTerrState = selectedFromId ? game.territories[selectedFromId] : null}
               {@const isManeuverDest =
+                isMyTurn &&
                 game.phase === "maneuver" &&
                 Boolean(selectedFromId) &&
                 t.id !== selectedFromId &&
@@ -999,11 +1004,13 @@
                         ? "#c084fc"
                         : "#38bdf8"}
               {@const isEligibleManeuverOrigin =
+                isMyTurn &&
                 game.phase === "maneuver" &&
                 !selectedFromId &&
                 tState.ownerId === myPlayerId &&
                 tState.armies > 1}
               {@const isValidTarget =
+                isMyTurn &&
                 selectedFromId &&
                 ((game.phase === "attack" &&
                   tState.ownerId !== myPlayerId &&
@@ -1376,6 +1383,7 @@
                 {@const isSelected = selectedFromId === t.id || selectedToId === t.id}
                 {@const fromTerrState = selectedFromId ? game.territories[selectedFromId] : null}
                 {@const isValidTarget =
+                  isMyTurn &&
                   selectedFromId &&
                   ((game.phase === "attack" &&
                     tState.ownerId !== myPlayerId &&
@@ -2130,7 +2138,7 @@
           {/if}
 
           <!-- PASS E (Layer 7 - Directional Maneuver Vector Route — HEGEM-97) -->
-          {#if game.phase === "maneuver" && selectedFromId && selectedToId}
+          {#if isMyTurn && game.phase === "maneuver" && selectedFromId && selectedToId}
             {@const fromBadge = getTerritoryBadgeCoords(selectedFromId)}
             {@const toBadge = getTerritoryBadgeCoords(selectedToId)}
             {@const mVec = resolveShortestMapVector(fromBadge, toBadge, MAP_WIDTH)}

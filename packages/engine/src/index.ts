@@ -2390,8 +2390,11 @@ export function applyAction(
         currentPlayer.wonderConstructionLeft = 2;
         currentPlayer.wonderCountdownLeft = undefined;
         currentPlayer.wonderTerritoryId = terr.id;
+        // HEGEM-175: Starting a Wonder escalates global tension to >= 50% and builder infamy to 100%
+        state.worldTension = Math.max(state.worldTension ?? 0, 50);
+        currentPlayer.infamy = 100;
         state.log.push(
-          `🏛️ OBRA DO DIA FINAL: ${currentPlayer.name} iniciou a construção da Cidadela do Dia Final em ${def.namePt}! (+1 dado de defesa durante a obra; após concluída, contagem de 6 rodadas!)`
+          `🏛️ OBRA DO DIA FINAL: ${currentPlayer.name} iniciou a construção da Cidadela do Dia Final em ${def.namePt}! Tensão Mundial em ${state.worldTension}% e Infâmia em 100%! (+1 dado de defesa durante a obra; após concluída, contagem de 6 rodadas!)`
         );
         pushDramaticEvent(state, {
           kind: "wonder_started",
@@ -2399,10 +2402,10 @@ export function applyAction(
           tone: "gold",
           titlePt: "Cidadela do Dia Final Iniciada",
           titleEn: "Doomsday Citadel Under Construction",
-          subtitlePt: `${currentPlayer.name} iniciou a grande obra em ${def.namePt}`,
-          subtitleEn: `${currentPlayer.name} began construction in ${def.name}`,
-          bodyPt: `Durante a construção, ${def.namePt} recebe +1 no dado de defesa. Quando concluída, iniciará a contagem regressiva de 6 rodadas para o fim da guerra!`,
-          bodyEn: `During construction, ${def.name} gains +1 defense die. Once completed, a 6-round countdown to world victory begins!`,
+          subtitlePt: `${currentPlayer.name} iniciou a grande obra em ${def.namePt} — Tensão ≥ 50% | Infâmia 100%`,
+          subtitleEn: `${currentPlayer.name} began construction in ${def.name} — Tension ≥ 50% | Infamy 100%`,
+          bodyPt: `Escalada global imediata: Tensão Mundial elevada para ${state.worldTension}% e Infâmia de ${currentPlayer.name} em 100%. Durante a construção, ${def.namePt} recebe +1 no dado de defesa. Quando concluída, iniciará a contagem regressiva de 6 rodadas para o fim da guerra!`,
+          bodyEn: `Immediate global escalation: World Tension raised to ${state.worldTension}% and ${currentPlayer.name}'s Infamy to 100%. During construction, ${def.name} gains +1 defense die. Once completed, a 6-round countdown to world victory begins!`,
           actorPlayerId: playerId,
           territoryId: terr.id,
         });

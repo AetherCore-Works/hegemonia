@@ -4,6 +4,7 @@ export interface TooltipOptions {
   text: string;
   subtext?: string;
   delay?: number;
+  variant?: "default" | "danger";
 }
 
 export type TooltipParam = string | TooltipOptions;
@@ -19,6 +20,7 @@ export function tooltip(node: HTMLElement, param: TooltipParam) {
     if (!ui.tooltipsEnabled) return;
     const text = typeof param === "string" ? param : param.text;
     const subtext = typeof param === "string" ? undefined : param.subtext;
+    const variant = (typeof param === "object" ? param.variant : undefined) ?? "default";
     const delay = (typeof param === "object" ? param.delay : undefined) ?? 350;
 
     if (!text) return;
@@ -27,7 +29,7 @@ export function tooltip(node: HTMLElement, param: TooltipParam) {
       const rect = node.getBoundingClientRect();
       const x = rect.left + rect.width / 2;
       const y = rect.top;
-      ui.showTooltip(text, x, y, subtext);
+      ui.showTooltip(text, x, y, subtext, variant);
     }, delay);
   }
 

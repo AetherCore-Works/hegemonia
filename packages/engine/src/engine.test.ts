@@ -4402,6 +4402,8 @@ describe("HEGEM-142: Objetivo Bastião e Construção da Maravilha Soberana (Fim
     expect(updatedP1.resources.money).toBeLessThan(200);
     expect(updatedP1.resources.steel).toBeLessThan(50);
     expect(updatedP1.wonderStatus).toBe("constructing");
+    expect(state.worldTension).toBeGreaterThanOrEqual(50);
+    expect(updatedP1.infamy).toBe(100);
     expect(state.territories[p1Terr.id].buildings?.some((b) => b.type === "wonder")).toBe(true);
     expect(state.log.some((l) => l.includes("OBRA DO DIA FINAL"))).toBe(true);
 

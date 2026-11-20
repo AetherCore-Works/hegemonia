@@ -213,8 +213,10 @@
   function focusTerritory(territoryId: string, targetZoom = 1.35) {
     const terr = CLASSIC_MAP.territories.find((t) => t.id === territoryId);
     if (!terr) return;
-    selectedFromId = territoryId;
-    selectedToId = null;
+    if (isMyTurn) {
+      selectedFromId = territoryId;
+      selectedToId = null;
+    }
     inspectedTerritoryId = territoryId;
 
     if (autoCameraFocus) {
@@ -500,10 +502,21 @@
     };
   });
 
-  // Turn alert sound
+  // Turn alert sound & clear tactical selections on turn/phase change or out-of-turn
   let lastTurnPlayerId = "";
+  let lastGamePhase = "";
   $effect(() => {
-    if (game && currentTurnPlayer && currentTurnPlayer.id !== lastTurnPlayerId) {
+    if (!game) return;
+    if (!isMyTurn) {
+      selectedFromId = null;
+      selectedToId = null;
+    }
+    if (game.phase !== lastGamePhase) {
+      lastGamePhase = game.phase;
+      selectedFromId = null;
+      selectedToId = null;
+    }
+    if (currentTurnPlayer && currentTurnPlayer.id !== lastTurnPlayerId) {
       lastTurnPlayerId = currentTurnPlayer.id;
       selectedFromId = null;
       selectedToId = null;

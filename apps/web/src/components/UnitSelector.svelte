@@ -3,6 +3,7 @@
   import type { UnitCounts, UnitType } from "@hegemonia/shared";
   import { onDestroy } from "svelte";
   import { t } from "../i18n/index.svelte";
+  import { tooltip } from "../lib/tooltip";
   import Icon from "./Icon.svelte";
 
   let {
@@ -177,7 +178,13 @@
       {@const targetHalf = getTargetHalf(unitType)}
       {@const hasUnits = (available[unitType] ?? 0) > 0}
       <div class="unit-row" class:unavailable={!hasUnits}>
-        <div class="unit-label" title={t(`unit_${unitType}`)}>
+        <div
+          class="unit-label"
+          use:tooltip={{
+            text: t(`unit_tooltip_${unitType}_title`),
+            subtext: t(`unit_tooltip_${unitType}_desc`),
+          }}
+        >
           <Icon name={unitType} size={14} />
           <span>{t(`unit_${unitType}`)}</span>
         </div>
