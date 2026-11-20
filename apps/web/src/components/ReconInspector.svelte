@@ -230,6 +230,26 @@
               </button>
             {/if}
 
+            {#if inspectedTerritory.state.reconSpottedRound === game.round}
+              <div class="recon-status-alert warn">
+                <Icon name="recon-plane" size={14} />
+                <span>
+                  Alvo Marcado (Recon Aéreo): +15% ATQ / +1 dado menor, +20% demolição, anula Guerrilha nesta rodada.
+                </span>
+              </div>
+            {/if}
+
+            {#if !isOwnedByMe && inspectedTerritory.owner && (myPlayerState?.reconIntelByTargetPlayer?.[inspectedTerritory.owner.id] ?? -1) >= game.round}
+              {@const enemyRes = inspectedTerritory.owner.resources}
+              <div class="recon-status-alert intel">
+                <Icon name="recon-plane" size={14} />
+                <span>
+                  Inteligência ({inspectedTerritory.owner.name}):
+                  ${enemyRes.money} • {enemyRes.steel} Aço • {enemyRes.oil} Petróleo • {enemyRes.gold} Ouro
+                </span>
+              </div>
+            {/if}
+
             {#if inspectedTerritory.state.isEncircled}
               <div class="recon-status-alert danger">
                 <Icon name="supply-cut" size={14} />

@@ -834,6 +834,23 @@
               </label>
 
               <label class="sandbox-field">
+                <span>Modo de Combate</span>
+                <select
+                  value={customRules.combatMode ?? "dice"}
+                  disabled={!amIHost}
+                  onchange={(e) =>
+                    patchCustomRules({
+                      combatMode: (e.currentTarget as HTMLSelectElement).value as
+                        | "dice"
+                        | "deterministic",
+                    })}
+                >
+                  <option value="dice">Dados RNG (Clássico)</option>
+                  <option value="deterministic">Determinístico (Poder Combinado ±12%)</option>
+                </select>
+              </label>
+
+              <label class="sandbox-field">
                 <span>Economia / Renda ({customRules.economyMultiplier}x)</span>
                 <select
                   value={customRules.economyMultiplier}

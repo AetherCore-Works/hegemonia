@@ -419,6 +419,8 @@ export interface PlayerState {
   wonderTerritoryId?: string;
   /** National treasury ($) and strategic resource stockpiles (steel, oil, gold) */
   resources: PlayerResources;
+  /** Round until which enemy players' resources are revealed via tactical air recon (HEGEM-180) */
+  reconIntelByTargetPlayer?: Record<string, number>;
   /** Whether this player has already purchased a supply card with gold on the current turn */
   boughtCardWithGoldThisTurn?: boolean;
   /** Geoeconomic match telemetry & continental balance metrics (HEGEM-59) */
@@ -480,6 +482,10 @@ export interface TerritoryState {
   airMissionFlownThisTurn?: boolean;
   /** Target territory has received Close Air Support (CAS) bonus for attacker */
   casBonusAttackerId?: string;
+  /** Round when this territory was spotted by enemy tactical air recon (HEGEM-180) */
+  reconSpottedRound?: number;
+  /** Player ID who spotted this territory via tactical air recon (HEGEM-180) */
+  reconSpottedByPlayerId?: string;
 }
 
 export interface PendingConquest {
@@ -586,6 +592,7 @@ export type RulesPresetId = z.infer<typeof RulesPresetIdSchema>;
 export const CustomRulesConfigSchema = z.object({
   preset: RulesPresetIdSchema.default("standard"),
   classicMode: z.boolean().default(false),
+  combatMode: z.enum(["dice", "deterministic"]).default("dice"),
   economyMultiplier: z.number().min(0.5).max(3).default(1),
   worldTensionSpeed: z.number().min(0.5).max(2.5).default(1),
   doctrineLimitEnabled: z.boolean().default(true),
@@ -599,6 +606,7 @@ export type CustomRulesConfig = z.infer<typeof CustomRulesConfigSchema>;
 export const DEFAULT_CUSTOM_RULES: CustomRulesConfig = {
   preset: "standard",
   classicMode: false,
+  combatMode: "dice",
   economyMultiplier: 1,
   worldTensionSpeed: 1,
   doctrineLimitEnabled: true,
