@@ -1582,7 +1582,7 @@
                     {@const wonderLabel =
                       owner?.wonderStatus === "countdown"
                         ? `FIM ${owner.wonderCountdownLeft ?? 6}t`
-                        : `OBRA ${owner?.wonderConstructionLeft ?? 2}t`}
+                        : `OBRA ${owner?.wonderConstructionLeft ?? 4}t`}
                     <g transform="translate(0, -16.8)" pointer-events="none">
                       <rect
                         x="-16"

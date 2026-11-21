@@ -12,6 +12,7 @@
   import { getFactionName, getObjectiveDescription } from "../i18n/content.svelte";
   import { auth } from "../lib/auth.svelte";
   import { sound } from "../audio.js";
+  import AarMapTimelapse from "./AarMapTimelapse.svelte";
   import FactionFlag from "./FactionFlag.svelte";
   import Icon from "./Icon.svelte";
 
@@ -39,7 +40,7 @@
   } = $props();
 
   let minimized = $state(false);
-  let activeTab = $state<"summary" | "timeline" | "awards">("summary");
+  let activeTab = $state<"summary" | "timelapse" | "timeline" | "awards">("summary");
   let timelineMetric = $state<"territories" | "armies" | "economy">("territories");
 
   function getSnapshotMetricValue(
@@ -239,6 +240,14 @@
           <button
             type="button"
             class="v-tab-btn"
+            class:active={activeTab === "timelapse"}
+            onclick={() => { sound.playClick(); activeTab = "timelapse"; }}
+          >
+            Timelapse do Mapa ({timelineSnapshots.length}R)
+          </button>
+          <button
+            type="button"
+            class="v-tab-btn"
             class:active={activeTab === "timeline"}
             onclick={() => { sound.playClick(); activeTab = "timeline"; }}
           >
@@ -367,6 +376,8 @@
             </div>
           {/if}
         </div>
+        {:else if activeTab === "timelapse"}
+          <AarMapTimelapse {game} />
         {:else if activeTab === "timeline"}
           <div class="timeline-aar-box">
             <div class="timeline-header">
@@ -532,11 +543,12 @@
   }
 
   .victory-dossier-modal {
-    width: min(100%, 660px);
+    width: min(100%, 780px);
+    max-height: 92vh;
+    overflow-y: auto;
     background: linear-gradient(165deg, #111c32 0%, #070c16 100%);
     border: 1px solid rgba(234, 179, 8, 0.65);
     border-radius: 10px;
-    overflow: hidden;
     box-shadow: 0 32px 90px rgba(0, 0, 0, 0.95), 0 0 40px rgba(234, 179, 8, 0.18);
   }
 

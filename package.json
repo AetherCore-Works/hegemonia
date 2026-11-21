@@ -1,6 +1,6 @@
 {
   "name": "hegemonia",
-  "version": "0.6.2",
+  "version": "0.6.4",
   "private": true,
   "description": "Self-hosted geopolitical strategy board game (War/Risk clone)",
   "scripts": {

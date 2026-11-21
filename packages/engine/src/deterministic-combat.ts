@@ -134,12 +134,16 @@ export function resolveDeterministicCombat(
     defMult *= rounds >= 2 ? 0.6 : 0.75;
   }
 
-  // 6. Geopolitics: Last Stand vs Coalition
+  // 6. Geopolitics: Last Stand vs Coalition (disabled for active Doomsday Wonder builders)
   const defInfamy = defender?.infamy ?? 0;
-  if (defInfamy >= 100 && defenderVsCoalitionSize >= 3) {
-    defMult *= 1.35;
-  } else if (defInfamy >= 50 && defenderVsCoalitionSize >= 2) {
-    defMult *= 1.2;
+  const defenderHasActiveWonder =
+    defender?.wonderStatus === "constructing" || defender?.wonderStatus === "countdown";
+  if (!defenderHasActiveWonder) {
+    if (defInfamy >= 100 && defenderVsCoalitionSize >= 3) {
+      defMult *= 1.35;
+    } else if (defInfamy >= 50 && defenderVsCoalitionSize >= 2) {
+      defMult *= 1.2;
+    }
   }
   if (attackerIsCoalitionMember) attMult *= 1.15;
 
@@ -156,13 +160,10 @@ export function resolveDeterministicCombat(
   if (
     defender &&
     (defender.doctrineId === "tall_sovereign" ||
-      defender.doctrineId === "defense_in_depth")
+      defender.doctrineId === "defense_in_depth") &&
+    defenderTerritoryCount > 5
   ) {
-    if (defenderTerritoryCount > 5) {
-      defMult *= 0.9;
-    } else if (def.infantry > 0) {
-      defMult *= 1.15;
-    }
+    defMult *= 0.9;
   }
 
   const baseAttackPower = Number((baseAttack * attMult).toFixed(2));
@@ -176,6 +177,10 @@ export function resolveDeterministicCombat(
 
   const totalAtt = totalUnits(att);
   const totalDef = totalUnits(def);
+  const totalAttHp = totalAtt + (att.tank ?? 0);
+  const totalDefHp = totalDef + (def.tank ?? 0);
+  const minKillForDef = def.infantry === 0 && def.tank > 0 ? 2 : 1;
+  const minKillForAtt = att.infantry === 0 && att.tank > 0 ? 2 : 1;
   const attackerWonRound = effectiveAttackPower >= effectiveDefensePower;
 
   let attackerDamageDealt = 0;
@@ -185,32 +190,44 @@ export function resolveDeterministicCombat(
     // Clear attacker superiority
     const ratio = effectiveDefensePower > 0 ? effectiveAttackPower / effectiveDefensePower : 3;
     attackerDamageDealt = Math.min(
-      totalDef,
-      Math.max(1, Math.ceil(totalDef * Math.min(1, 0.45 * ratio)))
+      totalDefHp,
+      Math.max(minKillForDef, Math.ceil(totalDefHp * Math.min(1, 0.45 * ratio)))
     );
     defenderDamageDealt = Math.min(
-      totalAtt,
-      Math.max(0, Math.floor(totalDef * 0.25 / Math.max(1, ratio)))
+      totalAttHp,
+      Math.max(0, Math.floor((Math.min(totalAttHp, totalDefHp) * 0.25) / Math.max(1, ratio)))
     );
   } else if (effectiveDefensePower >= effectiveAttackPower * 1.15) {
     // Clear defender superiority
     const ratio = effectiveAttackPower > 0 ? effectiveDefensePower / effectiveAttackPower : 3;
     defenderDamageDealt = Math.min(
-      totalAtt,
-      Math.max(1, Math.ceil(totalAtt * Math.min(1, 0.45 * ratio)))
+      totalAttHp,
+      Math.max(minKillForAtt, Math.ceil(totalAttHp * Math.min(1, 0.45 * ratio)))
     );
     attackerDamageDealt = Math.min(
-      totalDef,
-      Math.max(0, Math.floor(totalAtt * 0.25 / Math.max(1, ratio)))
+      totalDefHp,
+      Math.max(0, Math.floor((Math.min(totalAttHp, totalDefHp) * 0.25) / Math.max(1, ratio)))
     );
   } else {
     // Tight battle (~1:1, within 15%)
     if (attackerWonRound) {
-      attackerDamageDealt = Math.min(totalDef, Math.max(1, Math.ceil(totalDef * 0.4)));
-      defenderDamageDealt = Math.min(totalAtt, Math.max(1, Math.floor(totalAtt * 0.25)));
+      attackerDamageDealt = Math.min(
+        totalDefHp,
+        Math.max(minKillForDef, Math.ceil(totalDefHp * 0.4))
+      );
+      defenderDamageDealt = Math.min(
+        totalAttHp,
+        Math.max(0, Math.floor(Math.min(totalAttHp, totalDefHp) * 0.25))
+      );
     } else {
-      defenderDamageDealt = Math.min(totalAtt, Math.max(1, Math.ceil(totalAtt * 0.4)));
-      attackerDamageDealt = Math.min(totalDef, Math.max(1, Math.floor(totalDef * 0.25)));
+      defenderDamageDealt = Math.min(
+        totalAttHp,
+        Math.max(minKillForAtt, Math.ceil(totalAttHp * 0.4))
+      );
+      attackerDamageDealt = Math.min(
+        totalDefHp,
+        Math.max(0, Math.floor(Math.min(totalAttHp, totalDefHp) * 0.25))
+      );
     }
   }
 

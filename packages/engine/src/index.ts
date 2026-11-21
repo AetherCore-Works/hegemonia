@@ -201,8 +201,8 @@ export function calculateTurnReinforcements(
 
   let doctrineBonus = 0;
   if (player?.doctrineId === "extermination") {
-    // Doutrina de Extermínio possui economia zero (0 0 0 0) e não pode construir; recebe +4 divisões de reforço por turno
-    doctrineBonus = 4;
+    // Doutrina de Extermínio possui economia zero (0 0 0 0); recebe +2 bônus base (+3 tropas na mobilização)
+    doctrineBonus = 2;
   }
 
   const moralePenalty = player?.moralePenalty ?? 0;
@@ -349,17 +349,17 @@ export function pushDramaticEvent(
   state.dramaticEvents = state.dramaticEvents ?? [];
   const id = `evt_${state.round}_${state.dramaticEvents.length + 1}_${event.kind}`;
   state.dramaticEvents.push({ ...event, id });
-  if (state.dramaticEvents.length > 24) {
-    state.dramaticEvents = state.dramaticEvents.slice(-24);
+  if (state.dramaticEvents.length > 64) {
+    state.dramaticEvents = state.dramaticEvents.slice(-64);
   }
 }
 
 export function getWonderCost(state: GameState, playerId: string): { money: number; steel: number } {
   const ownedCount = Object.values(state.territories).filter((t) => t.ownerId === playerId).length;
   const bldgMult = state.rulesConfig?.buildingCostMultiplier ?? 1;
-  const rawMoney = 16 + Math.round(ownedCount * 2.5);
-  const money = Math.max(20, Math.round(rawMoney * bldgMult));
-  const steel = Math.max(6, 4 + Math.floor(ownedCount * 0.6));
+  const rawMoney = 24 + Math.round(ownedCount * 3);
+  const money = Math.max(28, Math.round(rawMoney * bldgMult));
+  const steel = Math.max(10, 7 + Math.floor(ownedCount * 0.8));
   return { money, steel };
 }
 
@@ -437,11 +437,16 @@ export function getPartisanRelocationStatus(
 
 /**
  * Records a compact per-round snapshot into `state.roundHistory` for the
- * After-Action Report timeline graphs (HEGEM-151).
+ * After-Action Report timeline graphs and map timelapse (HEGEM-151, HEGEM-182).
  */
-export function recordRoundSnapshot(state: GameState, snapshotRound = state.round): void {
+export function recordRoundSnapshot(
+  state: GameState,
+  snapshotRound = state.round,
+  overwriteExisting = false
+): void {
   state.roundHistory = state.roundHistory ?? [];
-  if (state.roundHistory.some((entry) => entry.round === snapshotRound)) {
+  const existingIdx = state.roundHistory.findIndex((entry) => entry.round === snapshotRound);
+  if (existingIdx >= 0 && !overwriteExisting) {
     return;
   }
 
@@ -459,11 +464,23 @@ export function recordRoundSnapshot(state: GameState, snapshotRound = state.roun
     };
   }
 
-  state.roundHistory.push({
+  const territoryOwners: Record<string, string> = {};
+  for (const t of Object.values(state.territories)) {
+    territoryOwners[t.id] = t.ownerId;
+  }
+
+  const snap: RoundSnapshot = {
     round: snapshotRound,
     worldTension: state.worldTension ?? 0,
     players: playersSnap,
-  });
+    territoryOwners,
+  };
+
+  if (existingIdx >= 0) {
+    state.roundHistory[existingIdx] = snap;
+  } else {
+    state.roundHistory.push(snap);
+  }
 }
 
 /**
@@ -2390,7 +2407,7 @@ export function applyAction(
       if (action.buildingType === "wonder") {
         currentPlayer.wonderRoundsHeld = 0;
         currentPlayer.wonderStatus = "constructing";
-        currentPlayer.wonderConstructionLeft = 2;
+        currentPlayer.wonderConstructionLeft = 4;
         currentPlayer.wonderCountdownLeft = undefined;
         currentPlayer.wonderTerritoryId = terr.id;
         // HEGEM-175: Starting a Wonder escalates global tension to >= 50% and builder infamy to 100%
@@ -3390,11 +3407,18 @@ export function applyAction(
       let defenderModifier = 0;
       let lastStandBonus = false;
 
+      const defenderHasActiveWonder = Boolean(
+        defenderPlayer?.wonderStatus === "constructing" ||
+          defenderPlayer?.wonderStatus === "countdown"
+      );
       const defenderCoalition = state.coalitions?.find(
         (c) => c.targetPlayerId === toTerr.ownerId && c.memberPlayerIds.includes(playerId)
       );
       if (defenderCoalition && defenderPlayer) {
-        if ((defenderPlayer.infamy ?? 0) >= 100 && defenderCoalition.memberPlayerIds.length >= 3) {
+        if (defenderHasActiveWonder) {
+          // HEGEM-175 / HEGEM-184: Coalitions against a Doomsday Wonder builder grant siege solidarity (+1 ATQ) instead of Last Stand
+          attackerModifier += 1;
+        } else if ((defenderPlayer.infamy ?? 0) >= 100 && defenderCoalition.memberPlayerIds.length >= 3) {
           defenderModifier = 2;
           lastStandBonus = true;
         } else if ((defenderPlayer.infamy ?? 0) >= 50 && defenderCoalition.memberPlayerIds.length >= 2) {
@@ -4659,6 +4683,19 @@ export function applyAction(
         state.log.push(
           `⚔️ COALIZÃO DECLARADA! ${actingPlayer.name} convocou uma coalizão militar contra o infame ${target.name}!`
         );
+        pushDramaticEvent(state, {
+          kind: "coalition_formed",
+          round: state.round,
+          tone: "amber",
+          titlePt: `Coalizão Contra ${target.name}`,
+          titleEn: `Coalition Against ${target.name}`,
+          subtitlePt: `Liderada por ${actingPlayer.name}`,
+          subtitleEn: `Led by ${actingPlayer.name}`,
+          bodyPt: `${actingPlayer.name} fundou uma coalizão militar para conter a hegemonia de ${target.name}.`,
+          bodyEn: `${actingPlayer.name} forged a military coalition to contain ${target.name}'s hegemony.`,
+          actorPlayerId: playerId,
+          targetPlayerId: action.targetPlayerId,
+        });
       }
       break;
     }
@@ -4873,7 +4910,7 @@ export function applyAction(
       if (checkPlayerVictory(state, p.id, map)) {
         state.winnerId = p.id;
         state.phase = "game_over";
-        recordRoundSnapshot(state, state.round);
+        recordRoundSnapshot(state, state.round, true);
         state.log.push(`[VITÓRIA] ${p.name} cumpriu seu objetivo e venceu a partida!`);
         break;
       }
@@ -5001,7 +5038,7 @@ function advanceTurn(state: GameState, rng: SeededRng, map: GameMapDef): void {
             p.wonderTerritoryId = wonderTerr.id;
 
             if (p.wonderStatus === "constructing") {
-              p.wonderConstructionLeft = Math.max(0, (p.wonderConstructionLeft ?? 2) - 1);
+              p.wonderConstructionLeft = Math.max(0, (p.wonderConstructionLeft ?? 4) - 1);
               if (p.wonderConstructionLeft === 0) {
                 p.wonderStatus = "countdown";
                 p.wonderCountdownLeft = 6;
@@ -5037,7 +5074,7 @@ function advanceTurn(state: GameState, rng: SeededRng, map: GameMapDef): void {
               if (p.wonderCountdownLeft <= 0) {
                 state.winnerId = p.id;
                 state.phase = "game_over";
-                recordRoundSnapshot(state, state.round);
+                recordRoundSnapshot(state, state.round, true);
                 state.log.push(
                   `💥 O DIA FINAL CHEGOU: A Cidadela em ${wName} completou a contagem regressiva! ${p.name} venceu a campanha mundial!`
                 );
@@ -5130,13 +5167,13 @@ function advanceTurn(state: GameState, rng: SeededRng, map: GameMapDef): void {
 
         switch (candidate.doctrineId) {
           case "extermination": {
-            candidate.unplacedArmies += 5;
+            candidate.unplacedArmies += 3;
             spawnOnTerr(capTerr, "tank", 2);
             spawnOnTerr(capTerr, "artillery", 2);
             spawnOnTerr(capTerr, "aircraft", 1);
             spawnOnTerr(coastalTerr, "navy", 1);
             state.log.push(
-              `☠️ MOBILIZAÇÃO DE EXTERMÍNIO: ${candidate.name} mobilizou +5 Infantarias, +2 Tanques, +2 Artilharias, +1 Avião e +1 Navio!`
+              `☠️ MOBILIZAÇÃO DE EXTERMÍNIO: ${candidate.name} mobilizou +3 Infantarias, +2 Tanques, +2 Artilharias, +1 Avião e +1 Navio!`
             );
             break;
           }
@@ -5144,7 +5181,7 @@ function advanceTurn(state: GameState, rng: SeededRng, map: GameMapDef): void {
             const totalInf =
               candTerrs.reduce((sum, t) => sum + getTerritoryUnits(t).infantry, 0) +
               candidate.unplacedArmies;
-            const addInf = Math.max(0, Math.min(2, 50 - totalInf));
+            const addInf = Math.max(0, Math.min(3, 50 - totalInf));
             if (addInf > 0) {
               candidate.unplacedArmies += addInf;
               state.log.push(
