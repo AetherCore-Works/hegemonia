@@ -70,8 +70,15 @@ import {
   totalUnits,
   UNIT_TYPES,
 } from "./units.js";
-import { resolveDeterministicCombat } from "./deterministic-combat.js";
-export { resolveDeterministicCombat, removeCasualtiesWithArmorAbsorption };
+import {
+  DEFENDER_BASE_ENTRENCHMENT_MULT,
+  resolveDeterministicCombat,
+} from "./deterministic-combat.js";
+export {
+  DEFENDER_BASE_ENTRENCHMENT_MULT,
+  resolveDeterministicCombat,
+  removeCasualtiesWithArmorAbsorption,
+};
 
 export * from "./rng.js";
 export * from "./units.js";
@@ -3466,6 +3473,11 @@ export function applyAction(
       let groundAttackerLosses = 0;
       let groundDefenderLosses = 0;
       let capitalTiesDefended = 0;
+      let deterministicSummary: GameState["lastCombat"] extends infer T
+        ? T extends { deterministicSummary?: infer D }
+          ? D
+          : undefined
+        : undefined;
       let groundAttackerCombat: { remaining: UnitCounts; losses: UnitCounts };
       let groundDefenderCombat: { remaining: UnitCounts; losses: UnitCounts };
 
@@ -3511,6 +3523,14 @@ export function applyAction(
           encircledDefenderPenalty = det.encircledDefenderPenalty;
           attackerDice = [Math.round(det.effectiveAttackPower * 10)];
           defenderDice = [Math.round(det.effectiveDefensePower * 10)];
+          deterministicSummary = {
+            baseAttackPower: det.baseAttackPower,
+            baseDefensePower: det.baseDefensePower,
+            effectiveAttackPower: det.effectiveAttackPower,
+            effectiveDefensePower: det.effectiveDefensePower,
+            defenderEntrenchmentPct: det.defenderEntrenchmentPct,
+            miniRolls: det.miniRolls,
+          };
 
           groundAttackerCombat = removeCasualtiesWithArmorAbsorption(
             activeGroundAttackerPool,
@@ -3735,6 +3755,10 @@ export function applyAction(
       state.lastCombat = {
         fromTerritoryId: fromTerr.id,
         toTerritoryId: toTerr.id,
+        attackerId: playerId,
+        defenderId,
+        combatMode: isDeterministic ? "deterministic" : "dice",
+        deterministicSummary,
         attackerDice,
         defenderDice,
         attackerLosses,
@@ -3793,9 +3817,15 @@ export function applyAction(
       const unescortedArtilleryTag = unescortedArtilleryPenalty
         ? " [Artilharia Desprotegida -1 DEF]"
         : "";
-      state.log.push(
-        `Combate ${fromName}${docAttTag}${heavyArmorCombatTag}${tankSupCombatTag}${artSaturationCombatTag} [${attackerDice.join(",")}] vs ${toName}${capitalCombatTag}${fortCombatTag}${docDefTag}${lastStandTag}${casTag}${coastalTag}${encircledTag}${unescortedArtilleryTag} [${defenderDice.join(",")}] → baixas ATQ:${attackerLosses} DEF:${defenderLosses}`
-      );
+      if (isDeterministic && deterministicSummary) {
+        state.log.push(
+          `Combate Determinístico ${fromName}${docAttTag}${heavyArmorCombatTag}${tankSupCombatTag}${artSaturationCombatTag} [ATQ ${deterministicSummary.effectiveAttackPower.toFixed(1)} vs DEF ${deterministicSummary.effectiveDefensePower.toFixed(1)} | ${deterministicSummary.miniRolls.length} salvas] contra ${toName}${capitalCombatTag}${fortCombatTag}${docDefTag}${lastStandTag}${casTag}${coastalTag}${encircledTag}${unescortedArtilleryTag} → baixas ATQ:${attackerLosses} DEF:${defenderLosses}`
+        );
+      } else {
+        state.log.push(
+          `Combate ${fromName}${docAttTag}${heavyArmorCombatTag}${tankSupCombatTag}${artSaturationCombatTag} [${attackerDice.join(",")}] vs ${toName}${capitalCombatTag}${fortCombatTag}${docDefTag}${lastStandTag}${casTag}${coastalTag}${encircledTag}${unescortedArtilleryTag} [${defenderDice.join(",")}] → baixas ATQ:${attackerLosses} DEF:${defenderLosses}`
+        );
+      }
 
       if (conquered) {
         toTerr.ownerId = playerId;

@@ -514,9 +514,32 @@ export interface AeronavalBattleResult {
   landingRepelled: boolean;
 }
 
+export interface DeterministicMiniRoll {
+  salvo: number;
+  attRoll: number;
+  defRoll: number;
+  attFire: number;
+  defFire: number;
+  attDamageDealt: number;
+  defDamageDealt: number;
+}
+
+export interface DeterministicCombatSummary {
+  baseAttackPower: number;
+  baseDefensePower: number;
+  effectiveAttackPower: number;
+  effectiveDefensePower: number;
+  defenderEntrenchmentPct: number;
+  miniRolls: DeterministicMiniRoll[];
+}
+
 export interface CombatRollResult {
   fromTerritoryId: string;
   toTerritoryId: string;
+  attackerId?: string;
+  defenderId?: string;
+  combatMode?: "dice" | "deterministic";
+  deterministicSummary?: DeterministicCombatSummary;
   attackerDice: number[];
   defenderDice: number[];
   attackerLosses: number;
@@ -597,7 +620,7 @@ export type OfficialLobbyPresetId = "classic_war" | "blitz" | "total_war";
 export const CustomRulesConfigSchema = z.object({
   preset: RulesPresetIdSchema.default("total_war"),
   classicMode: z.boolean().default(false),
-  combatMode: z.enum(["dice", "deterministic"]).default("dice"),
+  combatMode: z.enum(["dice", "deterministic"]).default("deterministic"),
   economyMultiplier: z.number().min(0.5).max(3).default(1),
   worldTensionSpeed: z.number().min(0.5).max(2.5).default(1),
   doctrineLimitEnabled: z.boolean().default(true),
@@ -611,7 +634,7 @@ export type CustomRulesConfig = z.infer<typeof CustomRulesConfigSchema>;
 export const DEFAULT_CUSTOM_RULES: CustomRulesConfig = {
   preset: "total_war",
   classicMode: false,
-  combatMode: "dice",
+  combatMode: "deterministic",
   economyMultiplier: 1,
   worldTensionSpeed: 1,
   doctrineLimitEnabled: true,
@@ -677,19 +700,19 @@ export const RULES_PRESETS: Record<OfficialLobbyPresetId, RulesPresetDef> = {
   },
   total_war: {
     id: "total_war",
-    badgePt: "Completo · v0.6.4",
-    badgeEn: "Full Mechanics · v0.6.4",
+    badgePt: "Determinístico · v0.6.4",
+    badgeEn: "Deterministic · v0.6.4",
     namePt: "Guerra Total",
     nameEn: "Total War",
     descPt:
-      "Todas as mecânicas ativas: 7 Doutrinas, Logística/Cerco, Mercado Global, Tensão Mundial, Cidadela e Reconhecimento Aéreo.",
+      "Combate Determinístico (mini-rolls com largura de frente + 10% entrincheiramento) e todas as mecânicas ativas: 7 Doutrinas, Cerco, Mercado, Cidadela e Recon Aéreo.",
     descEn:
-      "All mechanics active: 7 Doctrines, Supply/Encirclement, Global Market, World Tension, Citadel Wonder, and Air Recon.",
+      "Deterministic Combat (combat-width mini-rolls + 10% entrenchment) and all mechanics active: 7 Doctrines, Siege, Market, Citadel Wonder, and Air Recon.",
     config: {
       ...DEFAULT_CUSTOM_RULES,
       preset: "total_war",
       classicMode: false,
-      combatMode: "dice",
+      combatMode: "deterministic",
       doctrineLimitEnabled: true,
     },
   },

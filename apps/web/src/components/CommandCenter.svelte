@@ -863,7 +863,7 @@
               <label class="sandbox-field">
                 <span>Modo de Combate</span>
                 <select
-                  value={customRules.combatMode ?? "dice"}
+                  value={customRules.combatMode ?? "deterministic"}
                   disabled={!amIHost}
                   onchange={(e) =>
                     patchCustomRules({
@@ -872,8 +872,8 @@
                         | "deterministic",
                     })}
                 >
+                  <option value="deterministic">Determinístico (Mini-Rolls +10% DEF)</option>
                   <option value="dice">Dados RNG (Clássico)</option>
-                  <option value="deterministic">Determinístico (Poder Combinado ±12%)</option>
                 </select>
               </label>
 

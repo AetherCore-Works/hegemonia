@@ -622,10 +622,22 @@
             <small><Icon name="compass" size={10} /> OPERAÇÃO {roomCode}</small>
           </div>
         </div>
-        <span class="round-tag" title={t("round", { round: game.round })}>
-          <Icon name="clock" size={11} />
-          <span>{t("round", { round: game.round }).toUpperCase()}</span>
-        </span>
+        <div class="header-pills-group">
+          <span
+            class="combat-mode-tag"
+            class:is-det={(game.rulesConfig?.combatMode ?? "deterministic") === "deterministic"}
+            title={(game.rulesConfig?.combatMode ?? "deterministic") === "deterministic"
+              ? "Combate Determinístico (Mini-Rolls + 10% Entrincheiramento)"
+              : "Combate por Dados RNG (Clássico)"}
+          >
+            <Icon name="swords" size={10} />
+            <span>{(game.rulesConfig?.combatMode ?? "deterministic") === "deterministic" ? "DET" : "DADOS"}</span>
+          </span>
+          <span class="round-tag" title={t("round", { round: game.round })}>
+            <Icon name="clock" size={11} />
+            <span>{t("round", { round: game.round }).toUpperCase()}</span>
+          </span>
+        </div>
       </div>
     </div>
 
@@ -2991,6 +3003,30 @@
     align-items: center;
     gap: 0.25rem;
   }
+  .header-pills-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+  .combat-mode-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    padding: 0.22rem 0.45rem;
+    border-radius: 6px;
+    background: rgba(148, 163, 184, 0.16);
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    color: #cbd5e1;
+  }
+  .combat-mode-tag.is-det {
+    background: rgba(14, 165, 233, 0.16);
+    border-color: rgba(56, 189, 248, 0.42);
+    color: #7dd3fc;
+  }
   .round-tag {
     display: inline-flex;
     align-items: center;
@@ -4011,12 +4047,6 @@
     cursor: help;
   }
 
-  .tc-sub-bar {
-    display: flex;
-    justify-content: center;
-    width: 100%;
-    margin-top: 0.15rem;
-  }
   .btn-tc-mobilization {
     display: inline-flex;
     align-items: center;
@@ -4780,7 +4810,6 @@
     font-weight: 800;
     color: #f8fafc;
   }
-  .btn-lend-lease,
   .btn-coalition-aircraft {
     display: inline-flex;
     align-items: center;
@@ -4791,18 +4820,12 @@
     font-family: var(--font-tactical);
     font-size: 0.72rem;
     font-weight: 800;
-    background: rgba(15, 23, 42, 0.9);
-    border: 1px solid rgba(52, 211, 153, 0.45);
-    color: #a7f3d0;
     cursor: pointer;
-  }
-  .btn-coalition-aircraft {
     flex: 1;
-    border-color: rgba(56, 189, 248, 0.6);
+    border: 1px solid rgba(56, 189, 248, 0.6);
     background: rgba(14, 116, 144, 0.25);
     color: #7dd3fc;
   }
-  .btn-lend-lease:disabled,
   .btn-coalition-aircraft:disabled {
     opacity: 0.38;
     cursor: not-allowed;

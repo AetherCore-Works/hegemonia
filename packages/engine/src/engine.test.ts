@@ -1416,6 +1416,7 @@ describe("Combined Arms and Infantry Escort (HEGEM-27)", () => {
     const state = createGame({
       id: `g_units_${phase}`,
       seed: `units-${phase}`,
+      rulesConfig: { combatMode: "dice" },
       players: [
         { id: "p1", name: "Alice", color: "blue" },
         { id: "p2", name: "Bob", color: "red" },
@@ -2009,6 +2010,7 @@ describe("Military Supply Lines, Fuel Starvation & Encirclement (HEGEM-35)", () 
     let state = createGame({
       id: "g_supply_combat",
       seed: "supply-combat-seed",
+      rulesConfig: { combatMode: "dice" },
       players: [
         { id: "p1", name: "Alice", color: "blue" },
         { id: "p2", name: "Bob", color: "red" },
@@ -2131,6 +2133,7 @@ describe("Asymmetric Naval Blockade & Coastal Bombardment (HEGEM-57)", () => {
     let state = createGame({
       id: "g_nav_bombard",
       seed: "nav-bombard",
+      rulesConfig: { combatMode: "dice" },
       players: [
         { id: "p1", name: "Alice", color: "blue" },
         { id: "p2", name: "Bob", color: "red" },
@@ -2167,6 +2170,7 @@ describe("Asymmetric Naval Blockade & Coastal Bombardment (HEGEM-57)", () => {
     let state = createGame({
       id: "g_hegem_179_win",
       seed: "hegem-179-win",
+      rulesConfig: { combatMode: "dice" },
       players: [
         { id: "p1", name: "Alice", color: "blue" },
         { id: "p2", name: "Bob", color: "red" },
@@ -2356,6 +2360,7 @@ describe("Tanks, Blitzkrieg Spearhead & Infantry Assault Fatigue (HEGEM-25)", ()
     let state = createGame({
       id: "g_tank_reroll",
       seed: "tank-reroll",
+      rulesConfig: { combatMode: "dice" },
       players: [
         { id: "p1", name: "Alice", color: "blue" },
         { id: "p2", name: "Bob", color: "red" },
@@ -2650,6 +2655,7 @@ describe("Advanced Artillery Mechanics, Maintenance & Escort Vulnerability (HEGE
     let state = createGame({
       id: "g_art_vuln",
       seed: "art-vuln-seed",
+      rulesConfig: { combatMode: "dice" },
       players: [
         { id: "p1", name: "Alice", color: "blue" },
         { id: "p2", name: "Bob", color: "red" },
@@ -3059,6 +3065,7 @@ describe("HEGEM-96: Manual Deploy Phase Transition (end_deploy)", () => {
       let state = createGame({
         id: "g_tanks",
         seed: "hegem-109-tanks",
+        rulesConfig: { combatMode: "dice" },
         players: [
           { id: "p1", name: "Alice", color: "blue" },
           { id: "p2", name: "Bob", color: "red" },

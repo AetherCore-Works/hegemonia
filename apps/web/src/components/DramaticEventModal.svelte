@@ -40,6 +40,7 @@
       role="dialog"
       aria-modal="true"
       aria-label={isEn ? event.titleEn : event.titlePt}
+      tabindex="-1"
       onclick={(e) => e.stopPropagation()}
     >
       <div class="event-ribbon">

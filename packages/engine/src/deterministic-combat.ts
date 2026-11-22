@@ -1,6 +1,14 @@
-import type { PlayerState, TerritoryState, UnitCounts } from "@hegemonia/shared";
+import type {
+  DeterministicMiniRoll,
+  PlayerState,
+  TerritoryState,
+  UnitCounts,
+} from "@hegemonia/shared";
 import type { SeededRng } from "./rng";
 import { totalUnits } from "./units";
+
+/** Baseline +10% defensive terrain/entrenchment advantage in every deterministic battle. */
+export const DEFENDER_BASE_ENTRENCHMENT_MULT = 1.1;
 
 export interface DeterministicCombatInput {
   attackerUnits: UnitCounts;
@@ -34,6 +42,8 @@ export interface DeterministicCombatResult {
   attackerDamageDealt: number;
   defenderDamageDealt: number;
   attackerWonRound: boolean;
+  defenderEntrenchmentPct: number;
+  miniRolls: DeterministicMiniRoll[];
   artillerySuppressionBonus: boolean;
   artillerySiegeBonus: boolean;
   artillerySaturationBonus: boolean;
@@ -93,9 +103,9 @@ export function resolveDeterministicCombat(
     def.navy * 1.0 +
     def.aircraft * 1.0;
 
-  // 2. Combined-Arms & Unit Threshold Multipliers
+  // 2. Combined-Arms & Unit Threshold Multipliers (defender starts with +10% baseline entrenchment)
   let attMult = 1.0;
-  let defMult = 1.0;
+  let defMult = DEFENDER_BASE_ENTRENCHMENT_MULT;
 
   const tankSuperiorityBonus = att.tank >= 5 && att.tank > def.tank;
   if (tankSuperiorityBonus) attMult *= 1.15;
@@ -169,65 +179,89 @@ export function resolveDeterministicCombat(
   const baseAttackPower = Number((baseAttack * attMult).toFixed(2));
   const baseDefensePower = Number((baseDefense * defMult).toFixed(2));
 
-  // 8. Tactical Luck (+/-12%: range 0.88 to 1.12)
-  const attLuck = 0.88 + rng.nextFloat() * 0.24;
-  const defLuck = 0.88 + rng.nextFloat() * 0.24;
-  const effectiveAttackPower = Number((baseAttackPower * attLuck).toFixed(2));
-  const effectiveDefensePower = Number((baseDefensePower * defLuck).toFixed(2));
-
+  // 8. Combat-Width Mini-Rolls Exchange (+/-12% tactical micro-rolls per salvo)
   const totalAtt = totalUnits(att);
   const totalDef = totalUnits(def);
   const totalAttHp = totalAtt + (att.tank ?? 0);
   const totalDefHp = totalDef + (def.tank ?? 0);
   const minKillForDef = def.infantry === 0 && def.tank > 0 ? 2 : 1;
   const minKillForAtt = att.infantry === 0 && att.tank > 0 ? 2 : 1;
-  const attackerWonRound = effectiveAttackPower >= effectiveDefensePower;
 
-  let attackerDamageDealt = 0;
-  let defenderDamageDealt = 0;
+  const attPowerPerHp = baseAttackPower / Math.max(1, totalAttHp);
+  const defPowerPerHp = baseDefensePower / Math.max(1, totalDefHp);
+  const numSalvos = Math.min(5, Math.max(3, Math.ceil(Math.min(totalAtt, totalDef) / 2) + 1));
+  const SALVO_LETHALITY = 0.22;
 
-  if (effectiveAttackPower >= effectiveDefensePower * 1.15) {
-    // Clear attacker superiority
-    const ratio = effectiveDefensePower > 0 ? effectiveAttackPower / effectiveDefensePower : 3;
-    attackerDamageDealt = Math.min(
-      totalDefHp,
-      Math.max(minKillForDef, Math.ceil(totalDefHp * Math.min(1, 0.45 * ratio)))
-    );
-    defenderDamageDealt = Math.min(
-      totalAttHp,
-      Math.max(0, Math.floor((Math.min(totalAttHp, totalDefHp) * 0.25) / Math.max(1, ratio)))
-    );
-  } else if (effectiveDefensePower >= effectiveAttackPower * 1.15) {
-    // Clear defender superiority
-    const ratio = effectiveAttackPower > 0 ? effectiveDefensePower / effectiveAttackPower : 3;
-    defenderDamageDealt = Math.min(
-      totalAttHp,
-      Math.max(minKillForAtt, Math.ceil(totalAttHp * Math.min(1, 0.45 * ratio)))
-    );
-    attackerDamageDealt = Math.min(
-      totalDefHp,
-      Math.max(0, Math.floor((Math.min(totalAttHp, totalDefHp) * 0.25) / Math.max(1, ratio)))
-    );
-  } else {
-    // Tight battle (~1:1, within 15%)
+  let liveAttHp = totalAttHp;
+  let liveDefHp = totalDefHp;
+  let accDmgToDef = 0;
+  let accDmgToAtt = 0;
+  let sumAttFire = 0;
+  let sumDefFire = 0;
+  const miniRolls: DeterministicMiniRoll[] = [];
+
+  for (let salvo = 1; salvo <= numSalvos; salvo++) {
+    if (liveAttHp <= 0.05 || liveDefHp <= 0.05) break;
+
+    // Frontage / combat-width cap: smaller frontline caps active engagement, reserves contribute 25%
+    const width = Math.min(liveAttHp, liveDefHp);
+    const attEngaged = width + 0.25 * Math.max(0, liveAttHp - width);
+    const defEngaged = width + 0.25 * Math.max(0, liveDefHp - width);
+
+    const attRoll = Number((0.88 + rng.nextFloat() * 0.24).toFixed(2));
+    const defRoll = Number((0.88 + rng.nextFloat() * 0.24).toFixed(2));
+
+    const attFire = Number((attEngaged * attPowerPerHp * attRoll).toFixed(2));
+    const defFire = Number((defEngaged * defPowerPerHp * defRoll).toFixed(2));
+
+    const dmgToDef = Number((attFire * SALVO_LETHALITY).toFixed(2));
+    const dmgToAtt = Number((defFire * SALVO_LETHALITY).toFixed(2));
+
+    accDmgToDef += dmgToDef;
+    accDmgToAtt += dmgToAtt;
+    liveDefHp = Math.max(0, liveDefHp - dmgToDef);
+    liveAttHp = Math.max(0, liveAttHp - dmgToAtt);
+    sumAttFire += attFire;
+    sumDefFire += defFire;
+
+    miniRolls.push({
+      salvo,
+      attRoll,
+      defRoll,
+      attFire,
+      defFire,
+      attDamageDealt: dmgToDef,
+      defDamageDealt: dmgToAtt,
+    });
+  }
+
+  const avgAttRoll =
+    miniRolls.length > 0
+      ? miniRolls.reduce((sum, r) => sum + r.attRoll, 0) / miniRolls.length
+      : 1;
+  const avgDefRoll =
+    miniRolls.length > 0
+      ? miniRolls.reduce((sum, r) => sum + r.defRoll, 0) / miniRolls.length
+      : 1;
+  const effectiveAttackPower = Number((baseAttackPower * avgAttRoll).toFixed(2));
+  const effectiveDefensePower = Number((baseDefensePower * avgDefRoll).toFixed(2));
+  const attackerWonRound = sumAttFire >= sumDefFire;
+
+  let attackerDamageDealt = Math.min(
+    totalDefHp,
+    liveDefHp <= 0.05 ? totalDefHp : Math.round(accDmgToDef)
+  );
+  let defenderDamageDealt = Math.min(
+    totalAttHp,
+    liveAttHp <= 0.05 ? totalAttHp : Math.round(accDmgToAtt)
+  );
+
+  // Deadlock prevention: an active clash always inflicts at least 1 unit loss on the losing side
+  if (attackerDamageDealt < minKillForDef && defenderDamageDealt < minKillForAtt) {
     if (attackerWonRound) {
-      attackerDamageDealt = Math.min(
-        totalDefHp,
-        Math.max(minKillForDef, Math.ceil(totalDefHp * 0.4))
-      );
-      defenderDamageDealt = Math.min(
-        totalAttHp,
-        Math.max(0, Math.floor(Math.min(totalAttHp, totalDefHp) * 0.25))
-      );
+      attackerDamageDealt = Math.min(totalDefHp, minKillForDef);
     } else {
-      defenderDamageDealt = Math.min(
-        totalAttHp,
-        Math.max(minKillForAtt, Math.ceil(totalAttHp * 0.4))
-      );
-      attackerDamageDealt = Math.min(
-        totalDefHp,
-        Math.max(0, Math.floor(Math.min(totalAttHp, totalDefHp) * 0.25))
-      );
+      defenderDamageDealt = Math.min(totalAttHp, minKillForAtt);
     }
   }
 
@@ -239,6 +273,8 @@ export function resolveDeterministicCombat(
     attackerDamageDealt,
     defenderDamageDealt,
     attackerWonRound,
+    defenderEntrenchmentPct: 10,
+    miniRolls,
     artillerySuppressionBonus,
     artillerySiegeBonus,
     artillerySaturationBonus,

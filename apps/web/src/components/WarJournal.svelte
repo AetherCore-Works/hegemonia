@@ -117,7 +117,8 @@
     }
 
     if (/Atacou|Ataque|Combate|\bvs\b|BARRAGEM|BOMBARDEIO/i.test(raw)) {
-      const diceMatch = raw.match(/\[([\d,\s•]+)\]\s*vs\s*\[([\d,\s•]+)\]/i);
+      const detMatch = raw.match(/\[ATQ\s+([\d.]+)\s+vs\s+DEF\s+([\d.]+)[^\]]*\]/i);
+      const diceMatch = detMatch ? null : raw.match(/\[([\d,\s•]+)\]\s*vs\s*\[([\d,\s•]+)\]/i);
       return {
         raw,
         kind: "combat",
@@ -125,8 +126,8 @@
         tag: t("tag_combat"),
         playerColor,
         text: raw,
-        attDice: diceMatch ? diceMatch[1] : undefined,
-        defDice: diceMatch ? diceMatch[2] : undefined,
+        attDice: detMatch ? detMatch[1] : diceMatch ? diceMatch[1] : undefined,
+        defDice: detMatch ? detMatch[2] : diceMatch ? diceMatch[2] : undefined,
       };
     }
 
@@ -307,27 +308,60 @@
           {/if}
         </div>
 
-        <div class="dice-comparison-row">
-          <div class="dice-group att-group">
-            <span class="dice-side-label">{t("att_short")}</span>
-            {#each lastCombat.attackerDice as d, i}
-              {@const defDie = lastCombat.defenderDice[i]}
-              {@const wonPair = defDie !== undefined && d > defDie}
-              <span class="die-pip att-pip" class:die-win={wonPair}>{d}</span>
-            {/each}
+        {#if lastCombat.combatMode === "deterministic" && lastCombat.deterministicSummary}
+          {@const detSum = lastCombat.deterministicSummary}
+          {@const totalPower = Math.max(0.1, detSum.effectiveAttackPower + detSum.effectiveDefensePower)}
+          {@const attSharePct = Math.round((detSum.effectiveAttackPower / totalPower) * 100)}
+          <div class="det-telemetry-block">
+            <div class="det-power-header">
+              <span class="det-val-att">ATQ {detSum.effectiveAttackPower.toFixed(1)}</span>
+              <span class="det-entrench-pill">+{detSum.defenderEntrenchmentPct}% ENTRINCH.</span>
+              <span class="det-val-def">DEF {detSum.effectiveDefensePower.toFixed(1)}</span>
+            </div>
+            <div class="det-power-bar" role="img" aria-label="Comparação de poder de combate">
+              <div class="det-bar-att" style="width: {attSharePct}%;"></div>
+              <div class="det-bar-def" style="width: {100 - attSharePct}%;"></div>
+            </div>
+            <div class="det-losses-summary">
+              {t("combat_losses", { att: lastCombat.attackerLosses, def: lastCombat.defenderLosses })}
+            </div>
+            {#if detSum.miniRolls.length > 0}
+              <div class="det-mini-rolls-strip">
+                {#each detSum.miniRolls as roll}
+                  <span
+                    class="mini-roll-chip"
+                    class:att-edge={roll.attFire >= roll.defFire}
+                    title={`Salva ${roll.salvo}: ATQ x${roll.attRoll.toFixed(2)} (${roll.attFire.toFixed(1)} fogo) vs DEF x${roll.defRoll.toFixed(2)} (${roll.defFire.toFixed(1)} fogo)`}
+                  >
+                    S{roll.salvo}: {roll.attFire.toFixed(1)}/{roll.defFire.toFixed(1)}
+                  </span>
+                {/each}
+              </div>
+            {/if}
           </div>
+        {:else}
+          <div class="dice-comparison-row">
+            <div class="dice-group att-group">
+              <span class="dice-side-label">{t("att_short")}</span>
+              {#each lastCombat.attackerDice as d, i}
+                {@const defDie = lastCombat.defenderDice[i]}
+                {@const wonPair = defDie !== undefined && d > defDie}
+                <span class="die-pip att-pip" class:die-win={wonPair}>{d}</span>
+              {/each}
+            </div>
 
-          <span class="dice-vs">{t("vs")}</span>
+            <span class="dice-vs">{t("vs")}</span>
 
-          <div class="dice-group def-group">
-            {#each lastCombat.defenderDice as d, i}
-              {@const attDie = lastCombat.attackerDice[i]}
-              {@const wonPair = attDie !== undefined && d >= attDie}
-              <span class="die-pip def-pip" class:die-win={wonPair}>{d}</span>
-            {/each}
-            <span class="dice-side-label">{t("def_short")}</span>
+            <div class="dice-group def-group">
+              {#each lastCombat.defenderDice as d, i}
+                {@const attDie = lastCombat.attackerDice[i]}
+                {@const wonPair = attDie !== undefined && d >= attDie}
+                <span class="die-pip def-pip" class:die-win={wonPair}>{d}</span>
+              {/each}
+              <span class="dice-side-label">{t("def_short")}</span>
+            </div>
           </div>
-        </div>
+        {/if}
 
         {#if lastCombat.aeronavalBattle}
           <div
@@ -671,6 +705,76 @@
     color: #64748b;
     text-transform: uppercase;
     letter-spacing: 0.05em;
+  }
+  .det-telemetry-block {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .det-power-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    font-weight: 800;
+  }
+  .det-val-att {
+    color: #fca5a5;
+  }
+  .det-val-def {
+    color: #93c5fd;
+  }
+  .det-entrench-pill {
+    font-family: var(--font-tactical);
+    font-size: 0.56rem;
+    padding: 0.08rem 0.34rem;
+    border-radius: 3px;
+    background: rgba(59, 130, 246, 0.2);
+    border: 1px solid rgba(96, 165, 250, 0.45);
+    color: #bfdbfe;
+    letter-spacing: 0.04em;
+  }
+  .det-power-bar {
+    height: 6px;
+    border-radius: 999px;
+    overflow: hidden;
+    display: flex;
+    background: rgba(15, 23, 42, 0.9);
+  }
+  .det-bar-att {
+    background: linear-gradient(90deg, #dc2626, #f87171);
+    height: 100%;
+  }
+  .det-bar-def {
+    background: linear-gradient(90deg, #60a5fa, #2563eb);
+    height: 100%;
+  }
+  .det-losses-summary {
+    font-family: var(--font-tactical);
+    font-size: 0.64rem;
+    color: #e2e8f0;
+    text-align: center;
+  }
+  .det-mini-rolls-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.24rem;
+    justify-content: center;
+  }
+  .mini-roll-chip {
+    font-family: var(--font-mono);
+    font-size: 0.58rem;
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+    background: rgba(30, 58, 138, 0.38);
+    border: 1px solid rgba(96, 165, 250, 0.35);
+    color: #bfdbfe;
+  }
+  .mini-roll-chip.att-edge {
+    background: rgba(127, 29, 29, 0.42);
+    border-color: rgba(248, 113, 113, 0.4);
+    color: #fecaca;
   }
   .last-stand-badge {
     display: flex;

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CLASSIC_MAP } from "@hegemonia/maps";
 import {
   DEFAULT_CUSTOM_RULES,
   HEGEMONIA_VERSION,
@@ -11,6 +12,7 @@ import {
   createGame,
   createSeededRng,
   recordRoundSnapshot,
+  resolveDeterministicCombat,
 } from "./index.js";
 import { runBalanceBatch } from "./sim.js";
 
@@ -38,8 +40,9 @@ describe("v0.6.4 — HEGEM-182 Timelapse, HEGEM-183 Presets & HEGEM-184 Balance 
     expect(RULES_PRESETS.blitz.config.turnTimerSeconds).toBe(60);
 
     expect(RULES_PRESETS.total_war.config.classicMode).toBe(false);
-    expect(RULES_PRESETS.total_war.config.combatMode).toBe("dice");
+    expect(RULES_PRESETS.total_war.config.combatMode).toBe("deterministic");
     expect(RULES_PRESETS.total_war.config.doctrineLimitEnabled).toBe(true);
+    expect(DEFAULT_CUSTOM_RULES.combatMode).toBe("deterministic");
 
     expect(DEFAULT_CUSTOM_RULES.preset).toBe("total_war");
     expect(normalizeCustomRules({ preset: "standard" }).preset).toBe("total_war");
@@ -105,4 +108,135 @@ describe("v0.6.4 — HEGEM-182 Timelapse, HEGEM-183 Presets & HEGEM-184 Balance 
     expect(blitz.gamesPlayed).toBe(4);
     expect(blitz.completedGames).toBeGreaterThanOrEqual(2);
   }, 30000);
+
+  it("Deterministic Combat v2: enforces +10% baseline defender entrenchment, realistic mutual casualties with mini-rolls, and kills lone armored tanks", () => {
+    const rng = createSeededRng("det-v2-seed");
+    let state = createGame({
+      id: "det-v2",
+      seed: "det-v2-seed",
+      players: [
+        { id: "p1", name: "Atacante", color: "blue", doctrineId: "superior_firepower" },
+        { id: "p2", name: "Defensor", color: "red", doctrineId: "superior_firepower" },
+      ],
+    });
+
+    // Adjacent pair p1 -> p2
+    let fromId = "";
+    let toId = "";
+    for (const def of CLASSIC_MAP.territories) {
+      if (state.territories[def.id].ownerId !== "p1") continue;
+      const adj = def.neighbors.find((n) => state.territories[n].ownerId === "p2");
+      if (adj) {
+        fromId = def.id;
+        toId = adj;
+        break;
+      }
+    }
+    expect(fromId).not.toBe("");
+
+    // 1. Equal 5 Inf vs 5 Inf -> defender has +10% baseline entrenchment (5.5 vs 5.0)
+    const p1 = state.players.find((p) => p.id === "p1")!;
+    const p2 = state.players.find((p) => p.id === "p2")!;
+    const eqRes = resolveDeterministicCombat({
+      attackerUnits: { infantry: 5, tank: 0, artillery: 0, aircraft: 0, navy: 0 },
+      defenderUnits: { infantry: 5, tank: 0, artillery: 0, aircraft: 0, navy: 0 },
+      attacker: p1,
+      defender: p2,
+      fromTerritory: state.territories[fromId],
+      toTerritory: state.territories[toId],
+      attackerHasOil: false,
+      defenderHasOil: false,
+      fortLevel: 0,
+      isDefendingCapital: false,
+      wonderConstructing: false,
+      hasCasBonus: false,
+      coastalBombardment: false,
+      reconSpotted: false,
+      defenderVsCoalitionSize: 0,
+      attackerIsCoalitionMember: false,
+      defenderTerritoryCount: 10,
+      isFirstCombatRoundOnTarget: true,
+      rng: createSeededRng("eq-check"),
+    });
+    expect(eqRes.baseAttackPower).toBe(5);
+    expect(eqRes.baseDefensePower).toBe(5.5);
+    expect(eqRes.defenderEntrenchmentPct).toBe(10);
+    expect(eqRes.miniRolls.length).toBeGreaterThanOrEqual(3);
+
+    // 2. 10 Inf vs 5 Inf -> attacker wins/inflicts heavy losses AND suffers realistic mutual attrition (>= 2)
+    const plainRes = resolveDeterministicCombat({
+      attackerUnits: { infantry: 10, tank: 0, artillery: 0, aircraft: 0, navy: 0 },
+      defenderUnits: { infantry: 5, tank: 0, artillery: 0, aircraft: 0, navy: 0 },
+      attacker: p1,
+      defender: p2,
+      fromTerritory: state.territories[fromId],
+      toTerritory: state.territories[toId],
+      attackerHasOil: false,
+      defenderHasOil: false,
+      fortLevel: 0,
+      isDefendingCapital: false,
+      wonderConstructing: false,
+      hasCasBonus: false,
+      coastalBombardment: false,
+      reconSpotted: false,
+      defenderVsCoalitionSize: 0,
+      attackerIsCoalitionMember: false,
+      defenderTerritoryCount: 10,
+      isFirstCombatRoundOnTarget: true,
+      rng: createSeededRng("10v5-plain"),
+    });
+    expect(plainRes.attackerDamageDealt).toBeGreaterThanOrEqual(3);
+    expect(plainRes.defenderDamageDealt).toBeGreaterThanOrEqual(2);
+
+    // 3. 10 Inf vs 5 Inf behind Fort Lv.1 -> attacker takes strictly heavier losses than on plain ground
+    const fortRes = resolveDeterministicCombat({
+      attackerUnits: { infantry: 10, tank: 0, artillery: 0, aircraft: 0, navy: 0 },
+      defenderUnits: { infantry: 5, tank: 0, artillery: 0, aircraft: 0, navy: 0 },
+      attacker: p1,
+      defender: p2,
+      fromTerritory: state.territories[fromId],
+      toTerritory: state.territories[toId],
+      attackerHasOil: false,
+      defenderHasOil: false,
+      fortLevel: 1,
+      isDefendingCapital: false,
+      wonderConstructing: false,
+      hasCasBonus: false,
+      coastalBombardment: false,
+      reconSpotted: false,
+      defenderVsCoalitionSize: 0,
+      attackerIsCoalitionMember: false,
+      defenderTerritoryCount: 10,
+      isFirstCombatRoundOnTarget: true,
+      rng: createSeededRng("10v5-fort"),
+    });
+    expect(fortRes.defenderDamageDealt).toBeGreaterThan(plainRes.defenderDamageDealt);
+
+    // 4. 10 Inf vs 1 Lone Tank via full applyAction -> destroys 2-HP tank and populates lastCombat.deterministicSummary
+    state.territories[fromId].units = { infantry: 11, tank: 0, artillery: 0, aircraft: 0, navy: 0 };
+    state.territories[fromId].armies = 11;
+    state.territories[toId].units = { infantry: 0, tank: 1, artillery: 0, aircraft: 0, navy: 0 };
+    state.territories[toId].armies = 1;
+    state.round = 2;
+    state.phase = "attack";
+    state.turnIndex = state.players.findIndex((p) => p.id === "p1");
+
+    state = applyAction(
+      state,
+      "p1",
+      {
+        type: "attack",
+        fromTerritoryId: fromId,
+        toTerritoryId: toId,
+        units: { infantry: 10, tank: 0, artillery: 0, aircraft: 0, navy: 0 },
+      },
+      rng
+    );
+    expect(state.lastCombat?.combatMode).toBe("deterministic");
+    expect(state.lastCombat?.attackerId).toBe("p1");
+    expect(state.lastCombat?.defenderId).toBe("p2");
+    expect(state.lastCombat?.conquered).toBe(true);
+    expect(state.lastCombat?.deterministicSummary?.miniRolls.length).toBeGreaterThanOrEqual(2);
+    expect(state.lastCombat?.deterministicSummary?.defenderEntrenchmentPct).toBe(10);
+  });
 });
