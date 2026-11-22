@@ -167,10 +167,6 @@ export function applyDoctrineCombatDiceModifiers(params: {
     // Se estiver em Overextension (> 5 territórios): penalidade de -1 DEF
     if (defTerrCount > 5) {
       defenderDice[0] = Math.max(1, defenderDice[0] - 1);
-    } else if (defenderUnits.infantry > 0) {
-      // Bastião concentrado (<= 5 territórios): +1 no maior dado de defesa
-      defenderDice[0] = Math.min(6, defenderDice[0] + 1);
-      defenderBonusApplied = true;
     }
   }
 

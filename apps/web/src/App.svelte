@@ -58,7 +58,9 @@
   import {
     describeCombatOddsModifiers,
     estimateAttackWinOdds,
+    estimateDeterministicCombatForecast,
     type CombatOddsModifiers,
+    type DeterministicCombatForecast,
   } from "./odds.js";
   import { api, ApiError } from "./lib/api";
   import { auth } from "./lib/auth.svelte";
@@ -213,8 +215,10 @@
   function focusTerritory(territoryId: string, targetZoom = 1.35) {
     const terr = CLASSIC_MAP.territories.find((t) => t.id === territoryId);
     if (!terr) return;
-    selectedFromId = territoryId;
-    selectedToId = null;
+    if (isMyTurn) {
+      selectedFromId = territoryId;
+      selectedToId = null;
+    }
     inspectedTerritoryId = territoryId;
 
     if (autoCameraFocus) {
@@ -427,19 +431,36 @@
     const naval = isSea && attPlayer ? checkNavalBlockade(game, selectedFromId, selectedToId, attPlayer.id) : null;
     const assaultedSet = new Set(attPlayer?.assaultedTargetsThisTurn ?? []);
     return {
+      combatMode: game.rulesConfig?.combatMode ?? "deterministic",
       attackerDoctrine: attPlayer?.doctrineId ?? null,
       defenderDoctrine: defPlayer?.doctrineId ?? null,
       attackerUnits: selectedUnits,
       defenderUnits: defUnits,
       attackerHasFuel: !fromT.outOfFuel && (attPlayer?.resources?.oil ?? 0) > 0,
+      defenderHasFuel: (defPlayer?.resources?.oil ?? 0) > 0,
       isFirstRoundOnTarget: !assaultedSet.has(toT.id),
       defenderTerritoryCount: defTerrCount,
       fortificationLevel: getTerritoryBuildingLevel(toT, "fortification"),
       isDefenderCapital: defPlayer?.capitalTerritoryId === toT.id,
+      wonderConstructing:
+        hasTerritoryBuilding(toT, "wonder") && defPlayer?.wonderStatus === "constructing",
       hasCasBonus: toT.casBonusAttackerId === attPlayer?.id,
       coastalBombardment: Boolean(naval && naval.attackerNavy > 0),
+      reconSpotted: toT.reconSpottedRound === game.round,
       encircledPenalty: toT.isEncircled ? ((toT.encircledRounds ?? 1) >= 2 ? 2 : 1) : 0,
     };
+  });
+
+  let currentDeterministicForecast = $derived.by<DeterministicCombatForecast | null>(() => {
+    if (!game || !selectedFromId || !selectedToId) return null;
+    if ((game.rulesConfig?.combatMode ?? "deterministic") !== "deterministic") return null;
+    const toT = game.territories[selectedToId];
+    if (!toT) return null;
+    return estimateDeterministicCombatForecast(
+      selectedUnitTotal + 1,
+      toT.armies,
+      currentAttackModifiers ?? undefined
+    );
   });
 
   let currentAttackOdds = $derived.by(() => {
@@ -500,10 +521,21 @@
     };
   });
 
-  // Turn alert sound
+  // Turn alert sound & clear tactical selections on turn/phase change or out-of-turn
   let lastTurnPlayerId = "";
+  let lastGamePhase = "";
   $effect(() => {
-    if (game && currentTurnPlayer && currentTurnPlayer.id !== lastTurnPlayerId) {
+    if (!game) return;
+    if (!isMyTurn) {
+      selectedFromId = null;
+      selectedToId = null;
+    }
+    if (game.phase !== lastGamePhase) {
+      lastGamePhase = game.phase;
+      selectedFromId = null;
+      selectedToId = null;
+    }
+    if (currentTurnPlayer && currentTurnPlayer.id !== lastTurnPlayerId) {
       lastTurnPlayerId = currentTurnPlayer.id;
       selectedFromId = null;
       selectedToId = null;
@@ -924,11 +956,16 @@
         );
 
         // HEGEM-93: Tactical Audio & SFX Triangulation
-        const isDefendingMe =
+        const isDefendingMe = Boolean(
           game?.lastCombat &&
-          game.territories[game.lastCombat.toTerritoryId]?.occupierId === myPlayerId;
-        const isAttackingMe =
-          game?.lastCombat && game.lastCombat.attackerId === myPlayerId;
+            (game.lastCombat.defenderId === myPlayerId ||
+              game.territories[game.lastCombat.toTerritoryId]?.ownerId === myPlayerId)
+        );
+        const isAttackingMe = Boolean(
+          game?.lastCombat &&
+            (game.lastCombat.attackerId === myPlayerId ||
+              game.territories[game.lastCombat.fromTerritoryId]?.ownerId === myPlayerId)
+        );
 
         if (hasNewCombatLog && game?.lastCombat) {
           const isMaritime = isSeaLink(
@@ -1859,6 +1896,7 @@
         bind:selectedAttackDice
         {maxAttackerDice}
         {currentAttackOdds}
+        deterministicForecast={currentDeterministicForecast}
         attackOddsBadges={currentAttackModifierBadges}
         {selectedUnitTotal}
         {territoryById}

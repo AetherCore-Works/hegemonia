@@ -2,6 +2,7 @@
   import Icon from "./Icon.svelte";
   import FactionFlag from "./FactionFlag.svelte";
   import { t } from "../i18n/index.svelte";
+  import { tooltip } from "../lib/tooltip";
   import {
     UNIT_TYPES,
     UNIT_COSTS,
@@ -229,6 +230,26 @@
               </button>
             {/if}
 
+            {#if inspectedTerritory.state.reconSpottedRound === game.round}
+              <div class="recon-status-alert warn">
+                <Icon name="recon-plane" size={14} />
+                <span>
+                  Alvo Marcado (Recon Aéreo): +15% ATQ / +1 dado menor, +20% demolição, anula Guerrilha nesta rodada.
+                </span>
+              </div>
+            {/if}
+
+            {#if !isOwnedByMe && inspectedTerritory.owner && (myPlayerState?.reconIntelByTargetPlayer?.[inspectedTerritory.owner.id] ?? -1) >= game.round}
+              {@const enemyRes = inspectedTerritory.owner.resources}
+              <div class="recon-status-alert intel">
+                <Icon name="recon-plane" size={14} />
+                <span>
+                  Inteligência ({inspectedTerritory.owner.name}):
+                  ${enemyRes.money} • {enemyRes.steel} Aço • {enemyRes.oil} Petróleo • {enemyRes.gold} Ouro
+                </span>
+              </div>
+            {/if}
+
             {#if inspectedTerritory.state.isEncircled}
               <div class="recon-status-alert danger">
                 <Icon name="supply-cut" size={14} />
@@ -360,7 +381,10 @@
                 <div
                   class="recon-unit-chip {unitType}"
                   class:has-units={quantity > 0}
-                  title="{t(`unit_${unitType}`)}: {quantity}"
+                  use:tooltip={{
+                    text: t(`unit_tooltip_${unitType}_title`),
+                    subtext: t(`unit_tooltip_${unitType}_desc`),
+                  }}
                 >
                   <div class="unit-chip-icon">
                     <Icon name={unitType} size={18} />
@@ -493,6 +517,10 @@
                 <!-- Market ($5) -->
                 {#if !hasTerritoryBuilding(inspectedTerritory.state, "market")}
                   {@const isMarketBanned = myPlayerState?.doctrineId === "extermination"}
+                  <div
+                    class="build-btn-wrap"
+                    use:tooltip={bldgs.length >= maxSlots ? { text: t("building_no_slots_title"), subtext: t("building_no_slots_tooltip"), variant: "danger", delay: 120 } : ""}
+                  >
                   <button
                     type="button"
                     class="btn-build-option market-opt"
@@ -516,11 +544,16 @@
                       </strong>
                     </div>
                   </button>
+                  </div>
                 {/if}
 
                 <!-- Civilian Factory ($6, 1 Steel) -->
                 {#if !hasTerritoryBuilding(inspectedTerritory.state, "civilian_factory")}
                   {@const isCivBanned = myPlayerState?.doctrineId === "extermination"}
+                  <div
+                    class="build-btn-wrap"
+                    use:tooltip={bldgs.length >= maxSlots ? { text: t("building_no_slots_title"), subtext: t("building_no_slots_tooltip"), variant: "danger", delay: 120 } : ""}
+                  >
                   <button
                     type="button"
                     class="btn-build-option civilian-factory-opt"
@@ -547,10 +580,15 @@
                       </strong>
                     </div>
                   </button>
+                  </div>
                 {/if}
 
                 <!-- Industry ($6, 1 Steel) or Upgrade to Lv2 for Tall Sovereign ($8, 2 Steel) -->
                 {#if !hasTerritoryBuilding(inspectedTerritory.state, "industry")}
+                  <div
+                    class="build-btn-wrap"
+                    use:tooltip={bldgs.length >= maxSlots ? { text: t("building_no_slots_title"), subtext: t("building_no_slots_tooltip"), variant: "danger", delay: 120 } : ""}
+                  >
                   <button
                     type="button"
                     class="btn-build-option industry-opt"
@@ -574,6 +612,7 @@
                       </strong>
                     </div>
                   </button>
+                  </div>
                 {:else if (myPlayerState?.doctrineId === "tall_sovereign" || myPlayerState?.doctrineId === "defense_in_depth") && getTerritoryBuildingLevel(inspectedTerritory.state, "industry") === 1}
                   <button
                     type="button"
@@ -602,6 +641,10 @@
 
                 <!-- Military Factory ($7, 1 Steel) -->
                 {#if !hasTerritoryBuilding(inspectedTerritory.state, "military_factory")}
+                  <div
+                    class="build-btn-wrap"
+                    use:tooltip={bldgs.length >= maxSlots ? { text: t("building_no_slots_title"), subtext: t("building_no_slots_tooltip"), variant: "danger", delay: 120 } : ""}
+                  >
                   <button
                     type="button"
                     class="btn-build-option military-factory-opt"
@@ -625,11 +668,16 @@
                       </strong>
                     </div>
                   </button>
+                  </div>
                 {/if}
 
                 <!-- Doomsday Citadel (Wonder) — HEGEM-168 -->
                 {#if game && myPlayerState && (myPlayerState.objective?.rule.type === "fortified_bastion" || myPlayerState.doctrineId === "tall_sovereign" || myPlayerState.doctrineId === "defense_in_depth") && hasTerritoryBuilding(inspectedTerritory.state, "fortification") && !Object.values(game.territories).some((t) => t.ownerId === myPlayerId && hasTerritoryBuilding(t, "wonder"))}
                   {@const wCost = getWonderCost(game, myPlayerId!)}
+                  <div
+                    class="build-btn-wrap full-span"
+                    use:tooltip={bldgs.length >= maxSlots ? { text: t("building_no_slots_title"), subtext: t("building_no_slots_tooltip"), variant: "danger", delay: 120 } : ""}
+                  >
                   <button
                     type="button"
                     class="btn-build-option wonder-opt"
@@ -653,10 +701,15 @@
                       </strong>
                     </div>
                   </button>
+                  </div>
                 {/if}
 
                 <!-- Steel Mine ($5, only on steel deposits) -->
                 {#if inspectedTerritory.def.resource === "steel" && !hasTerritoryBuilding(inspectedTerritory.state, "steel_mine")}
+                  <div
+                    class="build-btn-wrap"
+                    use:tooltip={bldgs.length >= maxSlots ? { text: t("building_no_slots_title"), subtext: t("building_no_slots_tooltip"), variant: "danger", delay: 120 } : ""}
+                  >
                   <button
                     type="button"
                     class="btn-build-option steel-mine-opt"
@@ -677,10 +730,15 @@
                       </strong>
                     </div>
                   </button>
+                  </div>
                 {/if}
 
                 <!-- Oil Well ($5, only on oil basins) -->
                 {#if inspectedTerritory.def.resource === "oil" && !hasTerritoryBuilding(inspectedTerritory.state, "oil_well")}
+                  <div
+                    class="build-btn-wrap"
+                    use:tooltip={bldgs.length >= maxSlots ? { text: t("building_no_slots_title"), subtext: t("building_no_slots_tooltip"), variant: "danger", delay: 120 } : ""}
+                  >
                   <button
                     type="button"
                     class="btn-build-option oil-well-opt"
@@ -701,10 +759,15 @@
                       </strong>
                     </div>
                   </button>
+                  </div>
                 {/if}
 
                 <!-- Refinery ($7, 1 Steel) -->
                 {#if !hasTerritoryBuilding(inspectedTerritory.state, "refinery")}
+                  <div
+                    class="build-btn-wrap"
+                    use:tooltip={bldgs.length >= maxSlots ? { text: t("building_no_slots_title"), subtext: t("building_no_slots_tooltip"), variant: "danger", delay: 120 } : ""}
+                  >
                   <button
                     type="button"
                     class="btn-build-option refinery-opt"
@@ -728,10 +791,15 @@
                       </strong>
                     </div>
                   </button>
+                  </div>
                 {/if}
 
                 <!-- Fortification (Casamata $6 / Fortaleza $6+2A) -->
                 {#if inspectedFortLevel === 0}
+                  <div
+                    class="build-btn-wrap"
+                    use:tooltip={bldgs.length >= maxSlots ? { text: t("building_no_slots_title"), subtext: t("building_no_slots_tooltip"), variant: "danger", delay: 120 } : ""}
+                  >
                   <button
                     type="button"
                     class="btn-build-option fort-opt"
@@ -752,6 +820,7 @@
                       </strong>
                     </div>
                   </button>
+                  </div>
                 {:else if inspectedFortLevel === 1}
                   <button
                     type="button"
@@ -780,6 +849,10 @@
 
                 <!-- Airfield ($5, 1 Steel) -->
                 {#if !hasTerritoryBuilding(inspectedTerritory.state, "airfield")}
+                  <div
+                    class="build-btn-wrap"
+                    use:tooltip={bldgs.length >= maxSlots ? { text: t("building_no_slots_title"), subtext: t("building_no_slots_tooltip"), variant: "danger", delay: 120 } : ""}
+                  >
                   <button
                     type="button"
                     class="btn-build-option airfield-opt"
@@ -803,10 +876,15 @@
                       </strong>
                     </div>
                   </button>
+                  </div>
                 {/if}
 
                 <!-- Port ($5, coastal only) -->
                 {#if inspectedTerritory.def.isCoastal !== false && !hasTerritoryBuilding(inspectedTerritory.state, "port")}
+                  <div
+                    class="build-btn-wrap"
+                    use:tooltip={bldgs.length >= maxSlots ? { text: t("building_no_slots_title"), subtext: t("building_no_slots_tooltip"), variant: "danger", delay: 120 } : ""}
+                  >
                   <button
                     type="button"
                     class="btn-build-option port-opt"
@@ -827,6 +905,7 @@
                       </strong>
                     </div>
                   </button>
+                  </div>
                 {/if}
 
                 <!-- Maravilha do Bastião ($12, 4 Aço - Exclusivo para Objetivo de Bastião ou Doutrina Tall/Defesa) -->
@@ -837,6 +916,10 @@
                   )}
                   {@const wonderBlocked = !hasFort || hasAnyWonder}
                   {@const canAffordWonder = myRes.money >= 12 && myRes.steel >= 4}
+                  <div
+                    class="build-btn-wrap full-span"
+                    use:tooltip={bldgs.length >= maxSlots ? { text: t("building_no_slots_title"), subtext: t("building_no_slots_tooltip"), variant: "danger", delay: 120 } : ""}
+                  >
                   <button
                     type="button"
                     class="btn-build-option wonder-opt"
@@ -873,6 +956,7 @@
                       </strong>
                     </div>
                   </button>
+                  </div>
                 {/if}
               </div>
               {/if}
@@ -910,13 +994,19 @@
                         !hasTerritoryBuilding(inspectedTerritory.state, "port")) ||
                         inspectedTerritory.def.isCoastal === false))}
 
+                  <div
+                    class="build-btn-wrap"
+                    use:tooltip={{
+                      text: t(`unit_tooltip_${unitType}_title`),
+                      subtext: t(`unit_tooltip_${unitType}_desc`),
+                    }}
+                  >
                   <button
                     type="button"
                     class="btn-build-option recruit-option {unitType}"
                     class:doctrine-banned={isUnitBannedByDoctrine}
                     disabled={!canRecruit}
                     onclick={() => handleRecruitUnit(inspectedTerritory!.def.id, unitType)}
-                    title={reqText}
                   >
                     <div class="build-opt-icon unit-icon {unitType}">
                       <Icon name={unitType} size={19} />
@@ -960,6 +1050,7 @@
                       {/if}
                     </div>
                   </button>
+                  </div>
                 {/each}
               </div>
             </section>
@@ -1727,6 +1818,16 @@
     flex-direction: column;
     gap: 0.38rem;
     margin-top: 0.25rem;
+  }
+  .build-btn-wrap {
+    display: flex;
+    width: 100%;
+  }
+  .build-btn-wrap.full-span {
+    grid-column: 1 / -1;
+  }
+  .build-btn-wrap > .btn-build-option {
+    width: 100%;
   }
 
   .btn-build-option {

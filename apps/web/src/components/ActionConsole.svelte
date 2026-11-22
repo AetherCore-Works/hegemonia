@@ -16,7 +16,7 @@
     subtractUnits,
     totalUnits,
   } from "@hegemonia/engine";
-  import type { CombatOddsBadge } from "../odds.js";
+  import type { CombatOddsBadge, DeterministicCombatForecast } from "../odds.js";
   import type {
     AirMissionType,
     GameState,
@@ -39,6 +39,7 @@
     selectedAttackDice: number | null;
     maxAttackerDice: number;
     currentAttackOdds: number | null;
+    deterministicForecast?: DeterministicCombatForecast | null;
     attackOddsBadges?: CombatOddsBadge[];
     selectedUnitTotal: number;
     territoryById: Map<string, TerritoryDef>;
@@ -69,6 +70,7 @@
     selectedAttackDice = $bindable(),
     maxAttackerDice,
     currentAttackOdds,
+    deterministicForecast = null,
     attackOddsBadges = [],
     selectedUnitTotal,
     territoryById,
@@ -414,27 +416,40 @@
             />
 
             <div class="attack-controls-row">
-              <div class="dice-selector">
-                <span>{t("attack_dice_label")}</span>
-                <button
-                  class="preset-btn"
-                  class:active={selectedAttackDice === null}
-                  onclick={() => (selectedAttackDice = null)}
-                >
-                  Max ({maxAttackerDice}D)
-                </button>
-                {#each [1, 2, 3] as dCount}
-                  {#if dCount <= maxAttackerDice}
-                    <button
-                      class="preset-btn"
-                      class:active={selectedAttackDice === dCount}
-                      onclick={() => (selectedAttackDice = dCount)}
-                    >
-                      {dCount}D
-                    </button>
-                  {/if}
-                {/each}
-              </div>
+              {#if (game.rulesConfig?.combatMode ?? "deterministic") === "deterministic" && deterministicForecast}
+                <div class="det-forecast-pill">
+                  <span class="det-power-pair">
+                    <strong class="det-att">ATQ {deterministicForecast.attackPower.toFixed(1)}</strong>
+                    <span class="det-sep">vs</span>
+                    <strong class="det-def">DEF {deterministicForecast.defensePower.toFixed(1)}</strong>
+                  </span>
+                  <span class="det-loss-est">
+                    Baixas est.: ATQ ~{deterministicForecast.estAttackerLosses} | DEF ~{deterministicForecast.estDefenderLosses} ({deterministicForecast.salvos} salvas)
+                  </span>
+                </div>
+              {:else}
+                <div class="dice-selector">
+                  <span>{t("attack_dice_label")}</span>
+                  <button
+                    class="preset-btn"
+                    class:active={selectedAttackDice === null}
+                    onclick={() => (selectedAttackDice = null)}
+                  >
+                    Max ({maxAttackerDice}D)
+                  </button>
+                  {#each [1, 2, 3] as dCount}
+                    {#if dCount <= maxAttackerDice}
+                      <button
+                        class="preset-btn"
+                        class:active={selectedAttackDice === dCount}
+                        onclick={() => (selectedAttackDice = dCount)}
+                      >
+                        {dCount}D
+                      </button>
+                    {/if}
+                  {/each}
+                </div>
+              {/if}
 
               {#if currentAttackOdds !== null}
                 <div class="odds-inline">
@@ -470,7 +485,10 @@
                 {#if canArtillery}
                   <button
                     class="btn secondary-btn support-mission-btn"
-                    title="Disparo de saturação sem contra-ataque: 4+ degrada fortaleza ou destrói unidades"
+                    use:tooltip={{
+                      text: t("unit_tooltip_artillery_title"),
+                      subtext: `Disparo de saturação sem contra-ataque (4+ degrada fortaleza). ${t("unit_tooltip_artillery_desc")}`,
+                    }}
                     onclick={confirmArtilleryBarrage}
                   >
                     <Icon name="artillery" size={13} />
@@ -480,7 +498,10 @@
                 {#if canAir}
                   <button
                     class="btn secondary-btn support-mission-btn"
-                    title="Apoio Aéreo Aproximado: +1 dado no próximo ataque a este território"
+                    use:tooltip={{
+                      text: t("unit_tooltip_aircraft_title"),
+                      subtext: `Apoio Aéreo Aproximado (+15% ATQ por esquadrilha ou +1 dado de ataque). ${t("unit_tooltip_aircraft_desc")}`,
+                    }}
                     onclick={() => confirmAirMission("cas")}
                   >
                     <Icon name="aircraft" size={13} />
@@ -488,7 +509,10 @@
                   </button>
                   <button
                     class="btn secondary-btn support-mission-btn"
-                    title="Bombardeio Estratégico: 5+ degrada construções inimigas"
+                    use:tooltip={{
+                      text: t("unit_tooltip_aircraft_title"),
+                      subtext: `Bombardeio Estratégico (5+ ou 4+ com Recon degrada construções). ${t("unit_tooltip_aircraft_desc")}`,
+                    }}
                     onclick={() => confirmAirMission("bombardment")}
                   >
                     <Icon name="bombardment" size={13} />
@@ -496,7 +520,10 @@
                   </button>
                   <button
                     class="btn secondary-btn support-mission-btn"
-                    title="Reconhecimento Aéreo: revela dados secretos e espionagem"
+                    use:tooltip={{
+                      text: t("unit_tooltip_aircraft_title"),
+                      subtext: `Reconhecimento Aéreo (+15% ATQ ou +1 menor dado, +20% colapso, anula Guerrilha e revela recursos por 2 rodadas). ${t("unit_tooltip_aircraft_desc")}`,
+                    }}
                     onclick={() => confirmAirMission("recon")}
                   >
                     <Icon name="recon-plane" size={13} />
@@ -1096,6 +1123,38 @@
     align-items: center;
     gap: 0.28rem;
     color: #94a3b8;
+  }
+  .det-forecast-pill {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px 8px;
+    border-radius: 5px;
+    background: rgba(15, 23, 42, 0.85);
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    font-size: 0.68rem;
+  }
+  .det-power-pair {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--font-mono);
+  }
+  .det-att {
+    color: #fca5a5;
+  }
+  .det-def {
+    color: #93c5fd;
+  }
+  .det-sep {
+    color: #64748b;
+    font-size: 0.62rem;
+    text-transform: uppercase;
+  }
+  .det-loss-est {
+    font-family: var(--font-tactical);
+    font-size: 0.64rem;
+    color: #cbd5e1;
   }
   .odds-inline {
     display: flex;

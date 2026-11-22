@@ -91,3 +91,45 @@ export function removeCasualties(
   const losses = selectUnits(units, quantity);
   return { remaining: subtractUnits(units, losses), losses };
 }
+
+/**
+ * HEGEM-178: Removes casualties where each Tank requires 2 damage points (2 HP)
+ * to be destroyed once damage reaches the armor column; 1 odd residual point is
+ * absorbed by tank armor without destroying a unit.
+ */
+export function removeCasualtiesWithArmorAbsorption(
+  units: UnitCounts,
+  damagePoints: number
+): { remaining: UnitCounts; losses: UnitCounts; absorbedDamage: number } {
+  let rem = Math.max(0, Math.floor(damagePoints));
+  const losses = emptyUnitCounts();
+
+  const infLoss = Math.min(units.infantry, rem);
+  losses.infantry = infLoss;
+  rem -= infLoss;
+
+  if (rem > 0 && units.tank > 0) {
+    const tankKillable = Math.min(units.tank, Math.floor(rem / 2));
+    losses.tank = tankKillable;
+    rem -= tankKillable * 2;
+  }
+
+  let absorbedDamage = 0;
+  if (rem === 1 && units.tank - losses.tank > 0) {
+    absorbedDamage = 1;
+    rem = 0;
+  }
+
+  for (const unitType of ["artillery", "aircraft", "navy"] as const) {
+    if (rem <= 0) break;
+    const loss = Math.min(units[unitType], rem);
+    losses[unitType] = loss;
+    rem -= loss;
+  }
+
+  return {
+    remaining: subtractUnits(units, losses),
+    losses,
+    absorbedDamage,
+  };
+}

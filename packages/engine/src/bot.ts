@@ -3,19 +3,23 @@ import type { GameAction, GameMapDef, GameState, PlayerState, UnitCounts } from 
 import {
   BUILDING_COSTS,
   checkNavalBlockade,
+  findAirMissionTargets,
   findValidTradeTriplet,
   getPartisanRelocationStatus,
   getReachableManeuverDistances,
   getTerritoryMaxBuildingSlots,
+  getWonderCost,
   hasTerritoryBuilding,
   INDUSTRY_LEVEL_2_COST,
   FORTIFICATION_LEVEL_2_COST,
+  selectMaritimeAttackUnits,
   UNIT_COSTS,
 } from "./index.js";
 import {
   emptyUnitCounts,
   getMovedInUnits,
   getTerritoryUnits,
+  selectUnits,
   subtractUnits,
   totalUnits,
 } from "./units.js";
@@ -92,8 +96,8 @@ function planDoctrineDeployPrepAction(
           hasTerritoryBuilding(t, "fortification") &&
           (t.buildings?.length ?? 0) < getTerritoryMaxBuildingSlots(state, t.id)
       );
-      const wonderMoney = getScaledMoneyCost(state, BUILDING_COSTS.wonder.money);
-      if (wonderBase && res.money >= wonderMoney && res.steel >= BUILDING_COSTS.wonder.steel) {
+      const wonderCost = getWonderCost(state, player.id);
+      if (wonderBase && res.money >= wonderCost.money && res.steel >= wonderCost.steel) {
         return { type: "build_structure", territoryId: wonderBase.id, buildingType: "wonder" };
       }
     }
@@ -213,7 +217,105 @@ function planDoctrineDeployPrepAction(
     }
   }
 
+  // 4. Mass Assault: spend surplus money recruiting $2 infantry on frontline
+  if (player.doctrineId === "mass_assault" && res.money >= 2) {
+    const frontInfBase =
+      owned.find(
+        (t) =>
+          !t.isEncircled &&
+          mapById.get(t.id)?.neighbors.some((n) => state.territories[n]?.ownerId !== player.id)
+      ) ?? owned.find((t) => !t.isEncircled);
+    const totalInf =
+      owned.reduce((acc, t) => acc + getTerritoryUnits(t).infantry, 0) +
+      player.unplacedArmies;
+    const qty = Math.min(3, Math.floor(res.money / 2), Math.max(0, 50 - totalInf));
+    if (frontInfBase && qty > 0) {
+      return {
+        type: "recruit_unit",
+        territoryId: frontInfBase.id,
+        unitType: "infantry",
+        quantity: qty,
+      };
+    }
+  }
+
   return null;
+}
+
+function planCoalitionDiplomacyAction(
+  state: GameState,
+  player: PlayerState
+): GameAction | null {
+  if (state.rulesConfig?.classicMode || state.round <= 1) return null;
+
+  const coalitions = state.coalitions ?? [];
+  const activeWonderThreat = state.players.find(
+    (p) =>
+      p.id !== player.id &&
+      !p.eliminated &&
+      (p.wonderStatus === "constructing" || p.wonderStatus === "countdown") &&
+      (p.infamy ?? 0) >= 50
+  );
+  const infamyThreat =
+    activeWonderThreat ??
+    state.players.find(
+      (p) =>
+        p.id !== player.id &&
+        !p.eliminated &&
+        (p.infamy ?? 0) >= 50 &&
+        Object.values(state.territories).filter((t) => t.ownerId === p.id).length >= 16
+    );
+  if (!infamyThreat) return null;
+
+  const existing = coalitions.find((c) => c.targetPlayerId === infamyThreat.id);
+  if (existing) {
+    if (existing.memberPlayerIds.includes(player.id)) return null;
+    const maxMembers = (infamyThreat.infamy ?? 0) >= 100 ? 3 : 2;
+    if (existing.memberPlayerIds.length >= maxMembers) return null;
+    return { type: "join_coalition", coalitionId: existing.id };
+  }
+  return { type: "form_coalition", targetPlayerId: infamyThreat.id };
+}
+
+function computeDistanceMapToTargets(
+  targetIds: string[],
+  map: GameMapDef
+): Map<string, number> {
+  const dist = new Map<string, number>();
+  if (targetIds.length === 0) return dist;
+  const mapById = new Map(map.territories.map((t) => [t.id, t]));
+  const queue: string[] = [];
+  for (const tid of targetIds) {
+    dist.set(tid, 0);
+    queue.push(tid);
+  }
+  let head = 0;
+  while (head < queue.length) {
+    const cur = queue[head++];
+    const curD = dist.get(cur)!;
+    for (const n of mapById.get(cur)?.neighbors ?? []) {
+      if (!dist.has(n)) {
+        dist.set(n, curD + 1);
+        queue.push(n);
+      }
+    }
+  }
+  return dist;
+}
+
+function getActiveWonderTargetTerritories(
+  state: GameState,
+  playerId: string
+): string[] {
+  return state.players
+    .filter(
+      (p) =>
+        p.id !== playerId &&
+        !p.eliminated &&
+        (p.wonderStatus === "constructing" || p.wonderStatus === "countdown") &&
+        Boolean(p.wonderTerritoryId)
+    )
+    .map((p) => p.wonderTerritoryId!);
 }
 
 /**
@@ -244,6 +346,12 @@ export function planNextBotAction(
     return { type: "trade_cards", cardIds: triplet };
   }
 
+  // 2b. Coalition containment vs Wonder builders & runaway warmongers
+  const coalitionAction = planCoalitionDiplomacyAction(state, player);
+  if (coalitionAction) {
+    return coalitionAction;
+  }
+
   // 3. Deploy phase
   if (state.phase === "deploy") {
     // Partisan Nomadic Capital relocation every 2 rounds (HEGEM-150 / HEGEM-152)
@@ -272,6 +380,8 @@ export function planNextBotAction(
       );
 
       let chosen = frontline[0] ?? pool[0];
+      const wonderTargets = getActiveWonderTargetTerritories(state, playerId);
+      const wonderDist = computeDistanceMapToTargets(wonderTargets, map);
       if (isTallDoctrine(player) && player.capitalTerritoryId) {
         const cap = pool.find((t) => t.id === player.capitalTerritoryId);
         if (cap && cap.armies < 8) {
@@ -279,6 +389,11 @@ export function planNextBotAction(
         }
       } else if (frontline.length > 0) {
         const sortedFront = [...frontline].sort((a, b) => {
+          if (wonderDist.size > 0) {
+            const da = wonderDist.get(a.id) ?? 99;
+            const db = wonderDist.get(b.id) ?? 99;
+            if (da !== db) return da - db;
+          }
           const minEnemyA = Math.min(
             ...mapById
               .get(a.id)!
@@ -327,7 +442,58 @@ export function planNextBotAction(
 
   // 5. Attack phase
   if (state.phase === "attack") {
+    // 5a. Tactical Air Recon (HEGEM-180) before ground assaults
+    if (state.round > 1 && !state.rulesConfig?.classicMode && (player.resources?.oil ?? 0) >= 1) {
+      const airBases = Object.values(state.territories).filter(
+        (t) =>
+          t.ownerId === playerId &&
+          !t.isEncircled &&
+          !t.airMissionFlownThisTurn &&
+          hasTerritoryBuilding(t, "airfield") &&
+          getTerritoryUnits(t).aircraft >= 1
+      );
+      for (const airBase of airBases) {
+        const targets = findAirMissionTargets(state, airBase.id, map)
+          .map((tid) => state.territories[tid])
+          .filter(
+            (t) =>
+              t &&
+              t.ownerId !== playerId &&
+              t.reconSpottedRound !== state.round &&
+              t.armies >= 2 &&
+              !hasActiveTreatyBetween(state, playerId, t.ownerId)
+          );
+        if (targets.length > 0) {
+          targets.sort((a, b) => {
+            const aWonder = state.players.find((p) => p.id === a.ownerId)?.wonderStatus ? 1 : 0;
+            const bWonder = state.players.find((p) => p.id === b.ownerId)?.wonderStatus ? 1 : 0;
+            return bWonder - aWonder || b.armies - a.armies;
+          });
+          return {
+            type: "air_mission",
+            fromTerritoryId: airBase.id,
+            toTerritoryId: targets[0].id,
+            missionType: "recon",
+          };
+        }
+      }
+    }
+
     const owned = Object.values(state.territories);
+    const wonderThreatIds = new Set(
+      state.players
+        .filter(
+          (p) =>
+            p.id !== playerId &&
+            !p.eliminated &&
+            (p.wonderStatus === "constructing" || p.wonderStatus === "countdown")
+        )
+        .map((p) => p.id)
+    );
+    const wonderDist = computeDistanceMapToTargets(
+      getActiveWonderTargetTerritories(state, playerId),
+      map
+    );
     const myTerrs = owned
       .filter(
         (t) =>
@@ -337,9 +503,10 @@ export function planNextBotAction(
       )
       .sort((a, b) => b.armies - a.armies);
 
-    // Tall Sovereign avoids overextension beyond 5 territories unless chasing classic territory target
+    // Tall Sovereign avoids overextension beyond 5 territories unless a rival is building a Wonder
     const tallStopExpansion =
       isTallDoctrine(player) &&
+      wonderThreatIds.size === 0 &&
       owned.filter((t) => t.ownerId === playerId).length >= 5 &&
       (player.objective?.rule.type === "fortified_bastion" ||
         player.objective?.rule.type === "economic_hegemony" ||
@@ -348,22 +515,46 @@ export function planNextBotAction(
     if (!tallStopExpansion) {
       const minAdvantage = isTallDoctrine(player) ? 2 : 1;
       for (const from of myTerrs) {
+        const fromU = getTerritoryUnits(from);
+        const isBlitzAdvance = from.conqueredTurnRound === state.round && Boolean(from.blitzkriegAvailable);
+        const blitzTankUnits: UnitCounts | null = isBlitzAdvance
+          ? fromU.tank >= 1 && from.armies - fromU.tank >= 1
+            ? { ...emptyUnitCounts(), tank: fromU.tank }
+            : fromU.tank >= 2
+              ? { ...emptyUnitCounts(), tank: fromU.tank - 1 }
+              : null
+          : null;
+        if (isBlitzAdvance && !blitzTankUnits) {
+          continue;
+        }
+
         const enemies = mapById
           .get(from.id)!
           .neighbors.map((n) => state.territories[n])
           .filter((n) => {
             if (!n || n.ownerId === playerId) return false;
-            if (from.armies < n.armies + minAdvantage) return false;
+            const sea = isSeaLink(from.id, n.id);
+            const taskForce =
+              blitzTankUnits ??
+              (sea
+                ? selectMaritimeAttackUnits(fromU, from.armies - 1)
+                : selectUnits(fromU, from.armies - 1));
+            const tfGround = taskForce.infantry + taskForce.tank + taskForce.artillery;
+            const tfCount = totalUnits(taskForce);
+            if (tfGround < 1 || tfCount < 1) return false;
+            const reqAdv = wonderThreatIds.has(n.ownerId) ? 0 : minAdvantage;
+            if (tfCount + 1 < n.armies + reqAdv && from.armies < n.armies + reqAdv) {
+              return false;
+            }
+            if (from.armies < n.armies + reqAdv) return false;
             if (hasActiveTreatyBetween(state, playerId, n.ownerId)) return false;
-            if (isSeaLink(from.id, n.id)) {
+            if (sea) {
               const blockade = checkNavalBlockade(state, from.id, n.id, playerId);
               if (blockade.isBlockaded) return false;
-              const fromU = getTerritoryUnits(from);
               const toU = getTerritoryUnits(n);
               const defAeronaval = toU.navy + toU.aircraft;
-              const attAeronaval = fromU.navy + fromU.aircraft;
-              const attGround = fromU.infantry + fromU.tank + fromU.artillery;
-              if (defAeronaval > 0 && (attAeronaval < 1 || attGround < 1 || from.armies < 3)) {
+              const attAeronaval = taskForce.navy + taskForce.aircraft;
+              if (defAeronaval > 0 && (attAeronaval < 1 || tfGround < 1 || from.armies < 3)) {
                 return false;
               }
             }
@@ -371,13 +562,38 @@ export function planNextBotAction(
           });
 
         if (enemies.length > 0) {
-          enemies.sort((a, b) => a.armies - b.armies);
+          enemies.sort((a, b) => {
+            const aWonder = wonderThreatIds.has(a.ownerId)
+              ? hasTerritoryBuilding(a, "wonder")
+                ? 2
+                : 1
+              : 0;
+            const bWonder = wonderThreatIds.has(b.ownerId)
+              ? hasTerritoryBuilding(b, "wonder")
+                ? 2
+                : 1
+              : 0;
+            if (aWonder !== bWonder) return bWonder - aWonder;
+            if (wonderDist.size > 0) {
+              const da = wonderDist.get(a.id) ?? 99;
+              const db = wonderDist.get(b.id) ?? 99;
+              if (da !== db) return da - db;
+            }
+            return a.armies - b.armies;
+          });
           // Aggressive doctrines prefer blitzkrieg spearhead stacks first
           const bestTarget = enemies[0];
+          const sea = isSeaLink(from.id, bestTarget.id);
+          const taskForce =
+            blitzTankUnits ??
+            (sea
+              ? selectMaritimeAttackUnits(fromU, from.armies - 1)
+              : selectUnits(fromU, from.armies - 1));
           return {
             type: "attack",
             fromTerritoryId: from.id,
             toTerritoryId: bestTarget.id,
+            units: taskForce,
           };
         }
       }

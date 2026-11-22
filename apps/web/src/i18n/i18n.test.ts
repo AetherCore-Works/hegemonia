@@ -208,4 +208,25 @@ describe("i18n Formatting Helpers", () => {
     expect(SUPPORTED_LOCALES).toHaveLength(2);
     expect(SUPPORTED_LOCALES.map((l) => l.code)).toEqual(["pt-BR", "en"]);
   });
+
+  it("HEGEM-172: should have synced i18n keys for every objective, unit type, and building", () => {
+    for (const locale of ["pt-BR", "en"] as const) {
+      i18n.setLocale(locale);
+      for (const obj of ALL_OBJECTIVES) {
+        const title = getObjectiveTitle(obj.id);
+        const desc = getObjectiveDescription(obj.id);
+        expect(title.length).toBeGreaterThan(0);
+        expect(desc.length).toBeGreaterThan(0);
+        expect(title).not.toContain("obj_");
+        expect(desc).not.toContain("obj_");
+      }
+    }
+
+    for (const unit of ["infantry", "tank", "artillery", "aircraft", "navy"] as const) {
+      expect(catalogs["pt-BR"].game).toHaveProperty(`unit_${unit}`);
+      expect(catalogs["en"].game).toHaveProperty(`unit_${unit}`);
+      expect(catalogs["pt-BR"].game).toHaveProperty(`unit_tooltip_${unit}_title`);
+      expect(catalogs["en"].game).toHaveProperty(`unit_tooltip_${unit}_title`);
+    }
+  });
 });

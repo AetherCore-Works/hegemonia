@@ -419,6 +419,8 @@ export interface PlayerState {
   wonderTerritoryId?: string;
   /** National treasury ($) and strategic resource stockpiles (steel, oil, gold) */
   resources: PlayerResources;
+  /** Round until which enemy players' resources are revealed via tactical air recon (HEGEM-180) */
+  reconIntelByTargetPlayer?: Record<string, number>;
   /** Whether this player has already purchased a supply card with gold on the current turn */
   boughtCardWithGoldThisTurn?: boolean;
   /** Geoeconomic match telemetry & continental balance metrics (HEGEM-59) */
@@ -480,6 +482,10 @@ export interface TerritoryState {
   airMissionFlownThisTurn?: boolean;
   /** Target territory has received Close Air Support (CAS) bonus for attacker */
   casBonusAttackerId?: string;
+  /** Round when this territory was spotted by enemy tactical air recon (HEGEM-180) */
+  reconSpottedRound?: number;
+  /** Player ID who spotted this territory via tactical air recon (HEGEM-180) */
+  reconSpottedByPlayerId?: string;
 }
 
 export interface PendingConquest {
@@ -508,9 +514,32 @@ export interface AeronavalBattleResult {
   landingRepelled: boolean;
 }
 
+export interface DeterministicMiniRoll {
+  salvo: number;
+  attRoll: number;
+  defRoll: number;
+  attFire: number;
+  defFire: number;
+  attDamageDealt: number;
+  defDamageDealt: number;
+}
+
+export interface DeterministicCombatSummary {
+  baseAttackPower: number;
+  baseDefensePower: number;
+  effectiveAttackPower: number;
+  effectiveDefensePower: number;
+  defenderEntrenchmentPct: number;
+  miniRolls: DeterministicMiniRoll[];
+}
+
 export interface CombatRollResult {
   fromTerritoryId: string;
   toTerritoryId: string;
+  attackerId?: string;
+  defenderId?: string;
+  combatMode?: "dice" | "deterministic";
+  deterministicSummary?: DeterministicCombatSummary;
   attackerDice: number[];
   defenderDice: number[];
   attackerLosses: number;
@@ -564,6 +593,8 @@ export interface RoundSnapshot {
   round: number;
   worldTension: number;
   players: Record<string, RoundPlayerSnapshot>;
+  /** Compact territory ownership map (`territoryId -> ownerId`) for AAR map timelapse (HEGEM-182). */
+  territoryOwners?: Record<string, string>;
 }
 
 export interface PauseStateView {
@@ -575,17 +606,21 @@ export interface PauseStateView {
 }
 
 export const RulesPresetIdSchema = z.enum([
-  "standard",
   "classic_war",
   "blitz",
+  "total_war",
+  "standard",
   "superpower",
   "custom",
 ]);
 export type RulesPresetId = z.infer<typeof RulesPresetIdSchema>;
 
+export type OfficialLobbyPresetId = "classic_war" | "blitz" | "total_war";
+
 export const CustomRulesConfigSchema = z.object({
-  preset: RulesPresetIdSchema.default("standard"),
+  preset: RulesPresetIdSchema.default("total_war"),
   classicMode: z.boolean().default(false),
+  combatMode: z.enum(["dice", "deterministic"]).default("deterministic"),
   economyMultiplier: z.number().min(0.5).max(3).default(1),
   worldTensionSpeed: z.number().min(0.5).max(2.5).default(1),
   doctrineLimitEnabled: z.boolean().default(true),
@@ -597,8 +632,9 @@ export const CustomRulesConfigSchema = z.object({
 export type CustomRulesConfig = z.infer<typeof CustomRulesConfigSchema>;
 
 export const DEFAULT_CUSTOM_RULES: CustomRulesConfig = {
-  preset: "standard",
+  preset: "total_war",
   classicMode: false,
+  combatMode: "deterministic",
   economyMultiplier: 1,
   worldTensionSpeed: 1,
   doctrineLimitEnabled: true,
@@ -609,7 +645,9 @@ export const DEFAULT_CUSTOM_RULES: CustomRulesConfig = {
 };
 
 export interface RulesPresetDef {
-  id: Exclude<RulesPresetId, "custom">;
+  id: OfficialLobbyPresetId;
+  badgePt: string;
+  badgeEn: string;
   namePt: string;
   nameEn: string;
   descPt: string;
@@ -617,56 +655,65 @@ export interface RulesPresetDef {
   config: CustomRulesConfig;
 }
 
-export const RULES_PRESETS: Record<Exclude<RulesPresetId, "custom">, RulesPresetDef> = {
-  standard: {
-    id: "standard",
-    namePt: "Hegemonia Padrão (v0.6.2)",
-    nameEn: "Standard Hegemonia (v0.6.2)",
-    descPt: "Balanceamento competitivo completo com 7 Doutrinas, Economia de Guerra e Armas Combinadas.",
-    descEn: "Full competitive balance with 7 Doctrines, War Economy, and Combined Arms.",
-    config: { ...DEFAULT_CUSTOM_RULES, preset: "standard" },
-  },
+export const RULES_PRESETS: Record<OfficialLobbyPresetId, RulesPresetDef> = {
   classic_war: {
     id: "classic_war",
-    namePt: "Modo Clássico (War / Risk)",
-    nameEn: "Classic Mode (War / Risk)",
-    descPt: "Apenas Infantaria e Troca de Cartas tradicional. Desativa economia, obras, mercado e doutrinas.",
-    descEn: "Infantry-only and traditional Card Trades. Disables economy, structures, market, and doctrines.",
+    badgePt: "Tradicional · Dados RNG",
+    badgeEn: "Traditional · RNG Dice",
+    namePt: "Clássico",
+    nameEn: "Classic",
+    descPt:
+      "Regras tradicionais de War/Risk com dados RNG, apenas Infantaria e troca de cartas (sem doutrinas, obras ou mercado).",
+    descEn:
+      "Traditional War/Risk rules with RNG dice, Infantry-only and card trades (disables doctrines, structures, and market).",
     config: {
       ...DEFAULT_CUSTOM_RULES,
       preset: "classic_war",
       classicMode: true,
+      combatMode: "dice",
       doctrineLimitEnabled: false,
     },
   },
   blitz: {
     id: "blitz",
-    namePt: "Blitzkrieg Rápida",
-    nameEn: "Fast Blitzkrieg",
-    descPt: "Ritmo acelerado: economia 1.5x, Tensão Mundial 2x, Turno 1 em 30s e turnos de 60s.",
-    descEn: "High tempo: 1.5x economy, 2x World Tension, 30s Turn 1 and 60s standard turns.",
+    badgePt: "Determinístico · ~15 min",
+    badgeEn: "Deterministic · ~15 min",
+    namePt: "Blitz Tático",
+    nameEn: "Tactical Blitz",
+    descPt:
+      "Combate Determinístico (HEGEM-178) + economia 1.5x, obras 25% mais baratas, tensão 2x e turnos rápidos (30s/60s).",
+    descEn:
+      "Deterministic Combat (HEGEM-178) + 1.5x economy, 25% cheaper builds, 2x tension, and fast turns (30s/60s).",
     config: {
       ...DEFAULT_CUSTOM_RULES,
       preset: "blitz",
+      classicMode: false,
+      combatMode: "deterministic",
       economyMultiplier: 1.5,
+      buildingCostMultiplier: 0.75,
       worldTensionSpeed: 2,
       turnOneTimerSeconds: 30,
       turnTimerSeconds: 60,
+      supplyCardGoldCost: 3,
+      doctrineLimitEnabled: true,
     },
   },
-  superpower: {
-    id: "superpower",
-    namePt: "Guerra Fria & Superpotências",
-    nameEn: "Cold War & Superpowers",
-    descPt: "Economia 2x, obras 25% mais baratas e cartas estratégicas por 3 Ouros.",
-    descEn: "2x economy, 25% cheaper structures, and strategic cards for 3 Gold.",
+  total_war: {
+    id: "total_war",
+    badgePt: "Determinístico · v0.6.4",
+    badgeEn: "Deterministic · v0.6.4",
+    namePt: "Guerra Total",
+    nameEn: "Total War",
+    descPt:
+      "Combate Determinístico (mini-rolls com largura de frente + 10% entrincheiramento) e todas as mecânicas ativas: 7 Doutrinas, Cerco, Mercado, Cidadela e Recon Aéreo.",
+    descEn:
+      "Deterministic Combat (combat-width mini-rolls + 10% entrenchment) and all mechanics active: 7 Doctrines, Siege, Market, Citadel Wonder, and Air Recon.",
     config: {
       ...DEFAULT_CUSTOM_RULES,
-      preset: "superpower",
-      economyMultiplier: 2,
-      buildingCostMultiplier: 0.75,
-      supplyCardGoldCost: 3,
-      worldTensionSpeed: 1.5,
+      preset: "total_war",
+      classicMode: false,
+      combatMode: "deterministic",
+      doctrineLimitEnabled: true,
     },
   },
 };
@@ -675,7 +722,13 @@ export function normalizeCustomRules(
   input?: Partial<CustomRulesConfig> | Record<string, unknown> | null
 ): CustomRulesConfig {
   const parsed = CustomRulesConfigSchema.safeParse(input ?? {});
-  if (parsed.success) return parsed.data;
+  if (parsed.success) {
+    const data = parsed.data;
+    if (data.preset === "standard") {
+      return { ...data, preset: "total_war" };
+    }
+    return data;
+  }
   return { ...DEFAULT_CUSTOM_RULES };
 }
 
@@ -685,6 +738,7 @@ export type DramaticEventKind =
   | "wonder_started"
   | "wonder_completed"
   | "wonder_destroyed"
+  | "coalition_formed"
   | "naval_blockade";
 
 export interface DramaticEvent {

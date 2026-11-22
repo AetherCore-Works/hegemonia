@@ -61,6 +61,7 @@ import {
   getMovedInUnits,
   getTerritoryUnits,
   removeCasualties,
+  removeCasualtiesWithArmorAbsorption,
   selectUnits,
   setMovedInUnits,
   setTerritoryUnits,
@@ -69,6 +70,15 @@ import {
   totalUnits,
   UNIT_TYPES,
 } from "./units.js";
+import {
+  DEFENDER_BASE_ENTRENCHMENT_MULT,
+  resolveDeterministicCombat,
+} from "./deterministic-combat.js";
+export {
+  DEFENDER_BASE_ENTRENCHMENT_MULT,
+  resolveDeterministicCombat,
+  removeCasualtiesWithArmorAbsorption,
+};
 
 export * from "./rng.js";
 export * from "./units.js";
@@ -198,8 +208,8 @@ export function calculateTurnReinforcements(
 
   let doctrineBonus = 0;
   if (player?.doctrineId === "extermination") {
-    // Doutrina de Extermínio possui economia zero (0 0 0 0) e não pode construir; recebe +4 divisões de reforço por turno
-    doctrineBonus = 4;
+    // Doutrina de Extermínio possui economia zero (0 0 0 0); recebe +2 bônus base (+3 tropas na mobilização)
+    doctrineBonus = 2;
   }
 
   const moralePenalty = player?.moralePenalty ?? 0;
@@ -346,17 +356,17 @@ export function pushDramaticEvent(
   state.dramaticEvents = state.dramaticEvents ?? [];
   const id = `evt_${state.round}_${state.dramaticEvents.length + 1}_${event.kind}`;
   state.dramaticEvents.push({ ...event, id });
-  if (state.dramaticEvents.length > 24) {
-    state.dramaticEvents = state.dramaticEvents.slice(-24);
+  if (state.dramaticEvents.length > 64) {
+    state.dramaticEvents = state.dramaticEvents.slice(-64);
   }
 }
 
 export function getWonderCost(state: GameState, playerId: string): { money: number; steel: number } {
   const ownedCount = Object.values(state.territories).filter((t) => t.ownerId === playerId).length;
   const bldgMult = state.rulesConfig?.buildingCostMultiplier ?? 1;
-  const rawMoney = 16 + Math.round(ownedCount * 2.5);
-  const money = Math.max(20, Math.round(rawMoney * bldgMult));
-  const steel = Math.max(6, 4 + Math.floor(ownedCount * 0.6));
+  const rawMoney = 24 + Math.round(ownedCount * 3);
+  const money = Math.max(28, Math.round(rawMoney * bldgMult));
+  const steel = Math.max(10, 7 + Math.floor(ownedCount * 0.8));
   return { money, steel };
 }
 
@@ -434,11 +444,16 @@ export function getPartisanRelocationStatus(
 
 /**
  * Records a compact per-round snapshot into `state.roundHistory` for the
- * After-Action Report timeline graphs (HEGEM-151).
+ * After-Action Report timeline graphs and map timelapse (HEGEM-151, HEGEM-182).
  */
-export function recordRoundSnapshot(state: GameState, snapshotRound = state.round): void {
+export function recordRoundSnapshot(
+  state: GameState,
+  snapshotRound = state.round,
+  overwriteExisting = false
+): void {
   state.roundHistory = state.roundHistory ?? [];
-  if (state.roundHistory.some((entry) => entry.round === snapshotRound)) {
+  const existingIdx = state.roundHistory.findIndex((entry) => entry.round === snapshotRound);
+  if (existingIdx >= 0 && !overwriteExisting) {
     return;
   }
 
@@ -456,11 +471,23 @@ export function recordRoundSnapshot(state: GameState, snapshotRound = state.roun
     };
   }
 
-  state.roundHistory.push({
+  const territoryOwners: Record<string, string> = {};
+  for (const t of Object.values(state.territories)) {
+    territoryOwners[t.id] = t.ownerId;
+  }
+
+  const snap: RoundSnapshot = {
     round: snapshotRound,
     worldTension: state.worldTension ?? 0,
     players: playersSnap,
-  });
+    territoryOwners,
+  };
+
+  if (existingIdx >= 0) {
+    state.roundHistory[existingIdx] = snap;
+  } else {
+    state.roundHistory.push(snap);
+  }
 }
 
 /**
@@ -2387,11 +2414,14 @@ export function applyAction(
       if (action.buildingType === "wonder") {
         currentPlayer.wonderRoundsHeld = 0;
         currentPlayer.wonderStatus = "constructing";
-        currentPlayer.wonderConstructionLeft = 2;
+        currentPlayer.wonderConstructionLeft = 4;
         currentPlayer.wonderCountdownLeft = undefined;
         currentPlayer.wonderTerritoryId = terr.id;
+        // HEGEM-175: Starting a Wonder escalates global tension to >= 50% and builder infamy to 100%
+        state.worldTension = Math.max(state.worldTension ?? 0, 50);
+        currentPlayer.infamy = 100;
         state.log.push(
-          `🏛️ OBRA DO DIA FINAL: ${currentPlayer.name} iniciou a construção da Cidadela do Dia Final em ${def.namePt}! (+1 dado de defesa durante a obra; após concluída, contagem de 6 rodadas!)`
+          `🏛️ OBRA DO DIA FINAL: ${currentPlayer.name} iniciou a construção da Cidadela do Dia Final em ${def.namePt}! Tensão Mundial em ${state.worldTension}% e Infâmia em 100%! (+1 dado de defesa durante a obra; após concluída, contagem de 6 rodadas!)`
         );
         pushDramaticEvent(state, {
           kind: "wonder_started",
@@ -2399,10 +2429,10 @@ export function applyAction(
           tone: "gold",
           titlePt: "Cidadela do Dia Final Iniciada",
           titleEn: "Doomsday Citadel Under Construction",
-          subtitlePt: `${currentPlayer.name} iniciou a grande obra em ${def.namePt}`,
-          subtitleEn: `${currentPlayer.name} began construction in ${def.name}`,
-          bodyPt: `Durante a construção, ${def.namePt} recebe +1 no dado de defesa. Quando concluída, iniciará a contagem regressiva de 6 rodadas para o fim da guerra!`,
-          bodyEn: `During construction, ${def.name} gains +1 defense die. Once completed, a 6-round countdown to world victory begins!`,
+          subtitlePt: `${currentPlayer.name} iniciou a grande obra em ${def.namePt} — Tensão ≥ 50% | Infâmia 100%`,
+          subtitleEn: `${currentPlayer.name} began construction in ${def.name} — Tension ≥ 50% | Infamy 100%`,
+          bodyPt: `Escalada global imediata: Tensão Mundial elevada para ${state.worldTension}% e Infâmia de ${currentPlayer.name} em 100%. Durante a construção, ${def.namePt} recebe +1 no dado de defesa. Quando concluída, iniciará a contagem regressiva de 6 rodadas para o fim da guerra!`,
+          bodyEn: `Immediate global escalation: World Tension raised to ${state.worldTension}% and ${currentPlayer.name}'s Infamy to 100%. During construction, ${def.name} gains +1 defense die. Once completed, a 6-round countdown to world victory begins!`,
           actorPlayerId: playerId,
           territoryId: terr.id,
         });
@@ -2894,7 +2924,8 @@ export function applyAction(
         fromTerr.artilleryBarragesCountThisTurn >= maxBarrages;
       bumpWorldTension(state, 0.1);
       const rolls = Array.from({ length: fromUnits.artillery }, () => rng.rollD6());
-      const hits = rolls.filter((r) => r >= 4).length;
+      const hitThreshold = toTerr.reconSpottedRound === state.round ? 3 : 4;
+      const hits = rolls.filter((r) => r >= hitThreshold).length;
 
       state.lastStrike = {
         kind: "artillery_barrage",
@@ -3049,7 +3080,8 @@ export function applyAction(
           return true;
         });
 
-        if (bombRoll >= 5 && toTerr.buildings && targetableBuildingIdx !== -1) {
+        const bombTarget = toTerr.reconSpottedRound === state.round ? 4 : 5;
+        if (bombRoll >= bombTarget && toTerr.buildings && targetableBuildingIdx !== -1) {
           const targetBuilding = toTerr.buildings[targetableBuildingIdx];
           const bNames: Record<BuildingType, string> = {
             market: "Mercado",
@@ -3081,12 +3113,19 @@ export function applyAction(
         if (fromTerr.isEncircled) {
           throw new Error("Aeronaves em territórios cercados não conseguem transmitir dados de inteligência para a Capital.");
         }
+        // HEGEM-180: Target spotting (1 round) + enemy resource intel (2 rounds)
+        toTerr.reconSpottedRound = state.round;
+        toTerr.reconSpottedByPlayerId = playerId;
+        currentPlayer.reconIntelByTargetPlayer = {
+          ...(currentPlayer.reconIntelByTargetPlayer ?? {}),
+          [toTerr.ownerId]: state.round + 1,
+        };
         const targetPlayer = state.players.find((p) => p.id === toTerr.ownerId);
         const progress = targetPlayer ? calculateObjectiveProgress(state, targetPlayer.id, map) : null;
         state.log.push(
-          `📡 RECONHECIMENTO AÉREO: Voo de inteligência sobre ${toDef.namePt} (${targetPlayer?.name ?? "Inimigo"}): ${toTerr.armies} divisões guarnecidas${
+          `📡 RECONHECIMENTO AÉREO: Alvo ${toDef.namePt} marcado por 1 rodada (+15% ATQ / +1 dado menor, +20% demolição, anula Guerrilha)! Inteligência de recursos de ${targetPlayer?.name ?? "Inimigo"} revelada por 2 rodadas (${toTerr.armies} divisões${
             progress ? `, objetivo: ${progress.held}/${progress.total} (${progress.completionPct}%)` : ""
-          }.`
+          }).`
         );
       }
       break;
@@ -3375,11 +3414,18 @@ export function applyAction(
       let defenderModifier = 0;
       let lastStandBonus = false;
 
+      const defenderHasActiveWonder = Boolean(
+        defenderPlayer?.wonderStatus === "constructing" ||
+          defenderPlayer?.wonderStatus === "countdown"
+      );
       const defenderCoalition = state.coalitions?.find(
         (c) => c.targetPlayerId === toTerr.ownerId && c.memberPlayerIds.includes(playerId)
       );
       if (defenderCoalition && defenderPlayer) {
-        if ((defenderPlayer.infamy ?? 0) >= 100 && defenderCoalition.memberPlayerIds.length >= 3) {
+        if (defenderHasActiveWonder) {
+          // HEGEM-175 / HEGEM-184: Coalitions against a Doomsday Wonder builder grant siege solidarity (+1 ATQ) instead of Last Stand
+          attackerModifier += 1;
+        } else if ((defenderPlayer.infamy ?? 0) >= 100 && defenderCoalition.memberPlayerIds.length >= 3) {
           defenderModifier = 2;
           lastStandBonus = true;
         } else if ((defenderPlayer.infamy ?? 0) >= 50 && defenderCoalition.memberPlayerIds.length >= 2) {
@@ -3408,158 +3454,255 @@ export function applyAction(
       const groundDefenderCount = totalUnits(defenderGroundPool);
 
       const hasCasBonus = toTerr.casBonusAttackerId === playerId;
-      const maxAttackerDice = Math.min(hasCasBonus ? 4 : 3, activeGroundAttackerCount);
-      const attackerDiceCount = action.diceCount
-        ? Math.min(action.diceCount, maxAttackerDice)
-        : maxAttackerDice;
-      const defenderDiceCount = Math.min(3, groundDefenderCount);
+      const isReconSpotted = toTerr.reconSpottedRound === state.round;
+      const isDeterministic = state.rulesConfig?.combatMode === "deterministic";
 
-      const attackerDice =
-        groundDefenderCount > 0
-          ? Array.from({ length: attackerDiceCount }, () => rng.rollD6()).sort((a, b) => b - a)
-          : (aeronavalBattleResult?.attackerDice ?? []);
-      const defenderDice =
-        groundDefenderCount > 0
-          ? Array.from({ length: defenderDiceCount }, () => rng.rollD6()).sort((a, b) => b - a)
-          : (aeronavalBattleResult?.defenderDice ?? []);
-
-      // Tank re-roll 1s (Ponta de Lança Couraçada) if attacker has oil (HEGEM-25 & HEGEM-109)
+      let attackerDice: number[] = [];
+      let defenderDice: number[] = [];
       let blitzkriegBonus = false;
       let heavyArmorBonus = false;
       let tankSuperiorityBonus = false;
-      if (groundDefenderCount > 0 && attackingUnits.tank > 0 && attackerHadFuel) {
-        // 1-2 Tanques: re-rola 1s; 3+ Tanques: re-rola 1s e 2s (Ponta de Lança Pesada)
-        const minRoll = attackingUnits.tank >= 3 ? 3 : 2;
-        let reRolledAny = false;
-        for (let i = 0; i < attackerDice.length; i++) {
-          if (attackerDice[i] < minRoll) {
-            attackerDice[i] = rng.rollD6();
-            reRolledAny = true;
-          }
-        }
-        if (reRolledAny) {
-          attackerDice.sort((a, b) => b - a);
-          blitzkriegBonus = true;
-          if (attackingUnits.tank >= 3) heavyArmorBonus = true;
-        }
-
-        // 5+ Tanques com Superioridade Blindada: +1 no 2º maior dado de ataque
-        if (
-          attackingUnits.tank >= 5 &&
-          attackingUnits.tank > (toUnits.tank ?? 0) &&
-          attackerDice.length >= 2
-        ) {
-          attackerDice[1] += 1;
-          tankSuperiorityBonus = true;
-        }
-      }
-
-      // HEGEM-109: Escala de Artilharia de Apoio no Assalto
-      const artillerySuppressionBonus = (attackingUnits.artillery ?? 0) >= 2;
-      const artillerySiegeBonus = (attackingUnits.artillery ?? 0) >= 4;
-      const artillerySaturationBonus = (attackingUnits.artillery ?? 0) >= 6;
-
-      // HEGEM-116: Modificadores de Combate das Doutrinas HoI4
-      const {
-        attackerBonusApplied: doctrineAttackerBonus,
-        defenderBonusApplied: doctrineDefenderBonus,
-      } =
-        groundDefenderCount > 0
-          ? applyDoctrineCombatDiceModifiers({
-              state,
-              map,
-              attacker: currentPlayer,
-              defender: defenderPlayer,
-              fromTerritory: fromTerr,
-              toTerritory: toTerr,
-              committedAttackerUnits: activeGroundAttackerPool,
-              defenderUnits: defenderGroundPool,
-              attackerDice,
-              defenderDice,
-            })
-          : { attackerBonusApplied: false, defenderBonusApplied: false };
-
-      if (groundDefenderCount > 0) {
-        if (attackerModifier > 0 && attackerDice.length > 0) {
-          attackerDice[0] += attackerModifier;
-        }
-        if (coastalBombardment && attackerDice.length > 0) {
-          attackerDice[0] += 1;
-        }
-        if (defenderModifier > 0 && defenderDice.length > 0) {
-          defenderDice[0] += defenderModifier;
-        }
-      }
-
+      const artillerySuppressionBonus = (activeGroundAttackerPool.artillery ?? 0) >= 2;
+      const artillerySiegeBonus = (activeGroundAttackerPool.artillery ?? 0) >= 4;
+      const artillerySaturationBonus = (activeGroundAttackerPool.artillery ?? 0) >= 6;
+      let doctrineAttackerBonus = false;
+      let doctrineDefenderBonus = false;
       let encircledDefenderPenalty: number | undefined;
-      if (groundDefenderCount > 0 && toTerr.isEncircled) {
-        const pen = (toTerr.encircledRounds ?? 1) >= 2 ? 2 : 1;
-        encircledDefenderPenalty = pen;
-        if (defenderDice.length > 0) {
-          defenderDice[0] = Math.max(1, defenderDice[0] - pen);
-        }
-      }
-
       let unescortedArtilleryPenalty = false;
-      if (
-        groundDefenderCount > 0 &&
-        defenderGroundPool.artillery > 0 &&
-        defenderGroundPool.infantry === 0 &&
-        defenderGroundPool.tank === 0
-      ) {
-        unescortedArtilleryPenalty = true;
-        if (defenderDice.length > 0) {
-          defenderDice[0] = Math.max(1, defenderDice[0] - 1);
-        }
-      }
-
       const fortLevel = getTerritoryBuildingLevel(toTerr, "fortification");
-      if (groundDefenderCount > 0) {
-        // Casamata Nv. 1: +1 ao maior dado de defesa (suprimida se atacante tiver 2+ artilharias)
-        if (fortLevel >= 1 && defenderDice.length > 0) {
-          if (!artillerySuppressionBonus) {
-            defenderDice[0] += 1;
-          }
-        }
-        // HEGEM-161: Cidadela do Dia Final em construção concede +1 no dado de defesa
-        if (
-          hasTerritoryBuilding(toTerr, "wonder") &&
-          defenderPlayer?.wonderStatus === "constructing" &&
-          defenderDice.length > 0
-        ) {
-          defenderDice[0] += 1;
-        }
-        // Fortaleza Nv. 2: -1 ao maior dado de ataque (neutralizada se atacante tiver 4+ artilharias)
-        if (fortLevel >= 2 && attackerDice.length > 0) {
-          if (!artillerySiegeBonus) {
-            attackerDice[0] = Math.max(1, attackerDice[0] - 1);
-          }
-        }
-        // 6+ Artilharias: Saturação maciça (+1 ao maior dado de ataque)
-        if (artillerySaturationBonus && attackerDice.length > 0) {
-          attackerDice[0] += 1;
-        }
-      }
-
       let groundAttackerLosses = 0;
       let groundDefenderLosses = 0;
-      const comparisons =
-        groundDefenderCount > 0 ? Math.min(attackerDice.length, defenderDice.length) : 0;
       let capitalTiesDefended = 0;
+      let deterministicSummary: GameState["lastCombat"] extends infer T
+        ? T extends { deterministicSummary?: infer D }
+          ? D
+          : undefined
+        : undefined;
+      let groundAttackerCombat: { remaining: UnitCounts; losses: UnitCounts };
+      let groundDefenderCombat: { remaining: UnitCounts; losses: UnitCounts };
 
-      for (let i = 0; i < comparisons; i++) {
-        if (attackerDice[i] > defenderDice[i]) {
-          groundDefenderLosses++;
+      if (isDeterministic) {
+        if (groundDefenderCount > 0) {
+          const defenderHasFuel = (defenderPlayer?.resources?.oil ?? 0) > 0;
+          const assaulted = new Set(currentPlayer.assaultedTargetsThisTurn ?? []);
+          const isFirstCombatRoundOnTarget = !assaulted.has(toTerr.id);
+          assaulted.add(toTerr.id);
+          currentPlayer.assaultedTargetsThisTurn = [...assaulted];
+
+          const defenderTerritoryCount = defenderPlayer
+            ? Object.values(state.territories).filter((t) => t.ownerId === defenderPlayer.id).length
+            : 0;
+          const det = resolveDeterministicCombat({
+            attackerUnits: activeGroundAttackerPool,
+            defenderUnits: defenderGroundPool,
+            attacker: currentPlayer,
+            defender: defenderPlayer,
+            fromTerritory: fromTerr,
+            toTerritory: toTerr,
+            attackerHasOil: attackerHadFuel,
+            defenderHasOil: defenderHasFuel,
+            fortLevel,
+            isDefendingCapital,
+            wonderConstructing:
+              hasTerritoryBuilding(toTerr, "wonder") &&
+              defenderPlayer?.wonderStatus === "constructing",
+            hasCasBonus,
+            coastalBombardment,
+            reconSpotted: isReconSpotted,
+            defenderVsCoalitionSize: defenderCoalition?.memberPlayerIds.length ?? 0,
+            attackerIsCoalitionMember: Boolean(
+              defenderCoalition?.memberPlayerIds.includes(playerId)
+            ),
+            defenderTerritoryCount,
+            isFirstCombatRoundOnTarget,
+            rng,
+          });
+
+          tankSuperiorityBonus = det.tankSuperiorityBonus;
+          unescortedArtilleryPenalty = det.unescortedArtilleryPenalty;
+          encircledDefenderPenalty = det.encircledDefenderPenalty;
+          attackerDice = [Math.round(det.effectiveAttackPower * 10)];
+          defenderDice = [Math.round(det.effectiveDefensePower * 10)];
+          deterministicSummary = {
+            baseAttackPower: det.baseAttackPower,
+            baseDefensePower: det.baseDefensePower,
+            effectiveAttackPower: det.effectiveAttackPower,
+            effectiveDefensePower: det.effectiveDefensePower,
+            defenderEntrenchmentPct: det.defenderEntrenchmentPct,
+            miniRolls: det.miniRolls,
+          };
+
+          groundAttackerCombat = removeCasualtiesWithArmorAbsorption(
+            activeGroundAttackerPool,
+            det.defenderDamageDealt
+          );
+          groundDefenderCombat = removeCasualtiesWithArmorAbsorption(
+            defenderGroundPool,
+            det.attackerDamageDealt
+          );
+          groundAttackerLosses = totalUnits(groundAttackerCombat.losses);
+          groundDefenderLosses = totalUnits(groundDefenderCombat.losses);
         } else {
-          groundAttackerLosses++;
-          if (attackerDice[i] === defenderDice[i] && isDefendingCapital) {
-            capitalTiesDefended++;
+          attackerDice = aeronavalBattleResult?.attackerDice ?? [];
+          defenderDice = aeronavalBattleResult?.defenderDice ?? [];
+          groundAttackerCombat = {
+            remaining: { ...activeGroundAttackerPool },
+            losses: emptyUnitCounts(),
+          };
+          groundDefenderCombat = {
+            remaining: emptyUnitCounts(),
+            losses: emptyUnitCounts(),
+          };
+        }
+      } else {
+        const maxAttackerDice = Math.min(hasCasBonus ? 4 : 3, activeGroundAttackerCount);
+        const attackerDiceCount = action.diceCount
+          ? Math.min(action.diceCount, maxAttackerDice)
+          : maxAttackerDice;
+        const defenderDiceCount = Math.min(3, groundDefenderCount);
+
+        attackerDice =
+          groundDefenderCount > 0
+            ? Array.from({ length: attackerDiceCount }, () => rng.rollD6()).sort((a, b) => b - a)
+            : (aeronavalBattleResult?.attackerDice ?? []);
+        defenderDice =
+          groundDefenderCount > 0
+            ? Array.from({ length: defenderDiceCount }, () => rng.rollD6()).sort((a, b) => b - a)
+            : (aeronavalBattleResult?.defenderDice ?? []);
+
+        // HEGEM-180: Reconhecimento Aéreo concede +1 no menor dado de ataque
+        if (groundDefenderCount > 0 && isReconSpotted && attackerDice.length > 0) {
+          attackerDice[attackerDice.length - 1] = Math.min(
+            6,
+            attackerDice[attackerDice.length - 1] + 1
+          );
+          attackerDice.sort((a, b) => b - a);
+        }
+
+        // Tank re-roll 1s (Ponta de Lança Couraçada) if attacker has oil (HEGEM-25 & HEGEM-109)
+        if (groundDefenderCount > 0 && attackingUnits.tank > 0 && attackerHadFuel) {
+          // 1-2 Tanques: re-rola 1s; 3+ Tanques: re-rola 1s e 2s (Ponta de Lança Pesada)
+          const minRoll = attackingUnits.tank >= 3 ? 3 : 2;
+          let reRolledAny = false;
+          for (let i = 0; i < attackerDice.length; i++) {
+            if (attackerDice[i] < minRoll) {
+              attackerDice[i] = rng.rollD6();
+              reRolledAny = true;
+            }
+          }
+          if (reRolledAny) {
+            attackerDice.sort((a, b) => b - a);
+            blitzkriegBonus = true;
+            if (attackingUnits.tank >= 3) heavyArmorBonus = true;
+          }
+
+          // 5+ Tanques com Superioridade Blindada: +1 no 2º maior dado de ataque
+          if (
+            attackingUnits.tank >= 5 &&
+            attackingUnits.tank > (toUnits.tank ?? 0) &&
+            attackerDice.length >= 2
+          ) {
+            attackerDice[1] += 1;
+            tankSuperiorityBonus = true;
           }
         }
+
+        // HEGEM-116: Modificadores de Combate das Doutrinas HoI4
+        const docMod =
+          groundDefenderCount > 0
+            ? applyDoctrineCombatDiceModifiers({
+                state,
+                map,
+                attacker: currentPlayer,
+                defender: defenderPlayer,
+                fromTerritory: fromTerr,
+                toTerritory: toTerr,
+                committedAttackerUnits: activeGroundAttackerPool,
+                defenderUnits: defenderGroundPool,
+                attackerDice,
+                defenderDice,
+              })
+            : { attackerBonusApplied: false, defenderBonusApplied: false };
+        doctrineAttackerBonus = docMod.attackerBonusApplied;
+        doctrineDefenderBonus = docMod.defenderBonusApplied;
+
+        if (groundDefenderCount > 0) {
+          if (attackerModifier > 0 && attackerDice.length > 0) {
+            attackerDice[0] += attackerModifier;
+          }
+          if (coastalBombardment && attackerDice.length > 0) {
+            attackerDice[0] += 1;
+          }
+          if (defenderModifier > 0 && defenderDice.length > 0) {
+            defenderDice[0] += defenderModifier;
+          }
+        }
+
+        if (groundDefenderCount > 0 && toTerr.isEncircled) {
+          const pen = (toTerr.encircledRounds ?? 1) >= 2 ? 2 : 1;
+          encircledDefenderPenalty = pen;
+          if (defenderDice.length > 0) {
+            defenderDice[0] = Math.max(1, defenderDice[0] - pen);
+          }
+        }
+
+        if (
+          groundDefenderCount > 0 &&
+          defenderGroundPool.artillery > 0 &&
+          defenderGroundPool.infantry === 0 &&
+          defenderGroundPool.tank === 0
+        ) {
+          unescortedArtilleryPenalty = true;
+          if (defenderDice.length > 0) {
+            defenderDice[0] = Math.max(1, defenderDice[0] - 1);
+          }
+        }
+
+        if (groundDefenderCount > 0) {
+          // Casamata Nv. 1: +1 ao maior dado de defesa (suprimida se atacante tiver 2+ artilharias)
+          if (fortLevel >= 1 && defenderDice.length > 0) {
+            if (!artillerySuppressionBonus) {
+              defenderDice[0] += 1;
+            }
+          }
+          // HEGEM-161: Cidadela do Dia Final em construção concede +1 no dado de defesa
+          if (
+            hasTerritoryBuilding(toTerr, "wonder") &&
+            defenderPlayer?.wonderStatus === "constructing" &&
+            defenderDice.length > 0
+          ) {
+            defenderDice[0] += 1;
+          }
+          // Fortaleza Nv. 2: -1 ao maior dado de ataque (neutralizada se atacante tiver 4+ artilharias)
+          if (fortLevel >= 2 && attackerDice.length > 0) {
+            if (!artillerySiegeBonus) {
+              attackerDice[0] = Math.max(1, attackerDice[0] - 1);
+            }
+          }
+          // 6+ Artilharias: Saturação maciça (+1 ao maior dado de ataque)
+          if (artillerySaturationBonus && attackerDice.length > 0) {
+            attackerDice[0] += 1;
+          }
+        }
+
+        const comparisons =
+          groundDefenderCount > 0 ? Math.min(attackerDice.length, defenderDice.length) : 0;
+
+        for (let i = 0; i < comparisons; i++) {
+          if (attackerDice[i] > defenderDice[i]) {
+            groundDefenderLosses++;
+          } else {
+            groundAttackerLosses++;
+            if (attackerDice[i] === defenderDice[i] && isDefendingCapital) {
+              capitalTiesDefended++;
+            }
+          }
+        }
+
+        groundAttackerCombat = removeCasualties(activeGroundAttackerPool, groundAttackerLosses);
+        groundDefenderCombat = removeCasualties(defenderGroundPool, groundDefenderLosses);
       }
 
-      const groundAttackerCombat = removeCasualties(activeGroundAttackerPool, groundAttackerLosses);
-      const groundDefenderCombat = removeCasualties(defenderGroundPool, groundDefenderLosses);
       const attackerCombat = {
         remaining: isMaritimeAttack
           ? addUnits(groundAttackerCombat.remaining, survivingAttackerAeronavalUnits)
@@ -3585,7 +3728,6 @@ export function applyAction(
 
       const attackerLosses = navalAttackerLosses + groundAttackerLosses;
       const defenderLosses = totalUnits(defenderCombat.losses);
-
       setTerritoryUnits(
         fromTerr,
         addUnits(subtractUnits(fromUnits, attackingUnits), attackerCombat.remaining)
@@ -3613,6 +3755,10 @@ export function applyAction(
       state.lastCombat = {
         fromTerritoryId: fromTerr.id,
         toTerritoryId: toTerr.id,
+        attackerId: playerId,
+        defenderId,
+        combatMode: isDeterministic ? "deterministic" : "dice",
+        deterministicSummary,
         attackerDice,
         defenderDice,
         attackerLosses,
@@ -3671,9 +3817,15 @@ export function applyAction(
       const unescortedArtilleryTag = unescortedArtilleryPenalty
         ? " [Artilharia Desprotegida -1 DEF]"
         : "";
-      state.log.push(
-        `Combate ${fromName}${docAttTag}${heavyArmorCombatTag}${tankSupCombatTag}${artSaturationCombatTag} [${attackerDice.join(",")}] vs ${toName}${capitalCombatTag}${fortCombatTag}${docDefTag}${lastStandTag}${casTag}${coastalTag}${encircledTag}${unescortedArtilleryTag} [${defenderDice.join(",")}] → baixas ATQ:${attackerLosses} DEF:${defenderLosses}`
-      );
+      if (isDeterministic && deterministicSummary) {
+        state.log.push(
+          `Combate Determinístico ${fromName}${docAttTag}${heavyArmorCombatTag}${tankSupCombatTag}${artSaturationCombatTag} [ATQ ${deterministicSummary.effectiveAttackPower.toFixed(1)} vs DEF ${deterministicSummary.effectiveDefensePower.toFixed(1)} | ${deterministicSummary.miniRolls.length} salvas] contra ${toName}${capitalCombatTag}${fortCombatTag}${docDefTag}${lastStandTag}${casTag}${coastalTag}${encircledTag}${unescortedArtilleryTag} → baixas ATQ:${attackerLosses} DEF:${defenderLosses}`
+        );
+      } else {
+        state.log.push(
+          `Combate ${fromName}${docAttTag}${heavyArmorCombatTag}${tankSupCombatTag}${artSaturationCombatTag} [${attackerDice.join(",")}] vs ${toName}${capitalCombatTag}${fortCombatTag}${docDefTag}${lastStandTag}${casTag}${coastalTag}${encircledTag}${unescortedArtilleryTag} [${defenderDice.join(",")}] → baixas ATQ:${attackerLosses} DEF:${defenderLosses}`
+        );
+      }
 
       if (conquered) {
         toTerr.ownerId = playerId;
@@ -3699,6 +3851,7 @@ export function applyAction(
           let collapseChance = 0.30;
           if ((attackingUnits.tank ?? 0) > 0) collapseChance += 0.25;
           if ((attackingUnits.artillery ?? 0) > 0) collapseChance += 0.40;
+          if (isReconSpotted) collapseChance += 0.20;
           collapseChance = Math.min(0.95, collapseChance);
 
           const buildingLabelsPt: Record<BuildingType, string> = {
@@ -3819,15 +3972,17 @@ export function applyAction(
 
         if (maxMove <= 1) {
           state.pendingConquest = null;
-          // Epic IX — Guerra de Guerrilha: ocupação imediata com apenas 1 divisão dispara insurgência partisan!
-          resolveGuerrillaInsurgencyOnOccupy({
-            state,
-            map,
-            rng,
-            occupier: currentPlayer,
-            previousOwner: defenderPlayer,
-            conqueredTerritory: toTerr,
-          });
+          // Epic IX — Guerra de Guerrilha: ocupação imediata com apenas 1 divisão dispara insurgência partisan (anulada se alvo marcado por Recon Aéreo - HEGEM-180)
+          if (toTerr.reconSpottedRound !== state.round) {
+            resolveGuerrillaInsurgencyOnOccupy({
+              state,
+              map,
+              rng,
+              occupier: currentPlayer,
+              previousOwner: defenderPlayer,
+              conqueredTerritory: toTerr,
+            });
+          }
           updateSupplyAndEncirclement(state, map);
         } else {
           state.pendingConquest = {
@@ -3953,15 +4108,17 @@ export function applyAction(
         : undefined;
       state.pendingConquest = null;
 
-      // Epic IX — Guerra de Guerrilha: se o atacante avançar deixando apenas 1 divisão de guarnição no território conquistado
-      resolveGuerrillaInsurgencyOnOccupy({
-        state,
-        map,
-        rng,
-        occupier: currentPlayer,
-        previousOwner: prevOwner,
-        conqueredTerritory: toTerr,
-      });
+      // Epic IX — Guerra de Guerrilha: se o atacante avançar deixando apenas 1 divisão de guarnição no território conquistado (anulada se alvo marcado por Recon Aéreo - HEGEM-180)
+      if (toTerr.reconSpottedRound !== state.round) {
+        resolveGuerrillaInsurgencyOnOccupy({
+          state,
+          map,
+          rng,
+          occupier: currentPlayer,
+          previousOwner: prevOwner,
+          conqueredTerritory: toTerr,
+        });
+      }
 
       updateSupplyAndEncirclement(state, map);
       break;
@@ -4556,6 +4713,19 @@ export function applyAction(
         state.log.push(
           `⚔️ COALIZÃO DECLARADA! ${actingPlayer.name} convocou uma coalizão militar contra o infame ${target.name}!`
         );
+        pushDramaticEvent(state, {
+          kind: "coalition_formed",
+          round: state.round,
+          tone: "amber",
+          titlePt: `Coalizão Contra ${target.name}`,
+          titleEn: `Coalition Against ${target.name}`,
+          subtitlePt: `Liderada por ${actingPlayer.name}`,
+          subtitleEn: `Led by ${actingPlayer.name}`,
+          bodyPt: `${actingPlayer.name} fundou uma coalizão militar para conter a hegemonia de ${target.name}.`,
+          bodyEn: `${actingPlayer.name} forged a military coalition to contain ${target.name}'s hegemony.`,
+          actorPlayerId: playerId,
+          targetPlayerId: action.targetPlayerId,
+        });
       }
       break;
     }
@@ -4770,7 +4940,7 @@ export function applyAction(
       if (checkPlayerVictory(state, p.id, map)) {
         state.winnerId = p.id;
         state.phase = "game_over";
-        recordRoundSnapshot(state, state.round);
+        recordRoundSnapshot(state, state.round, true);
         state.log.push(`[VITÓRIA] ${p.name} cumpriu seu objetivo e venceu a partida!`);
         break;
       }
@@ -4898,7 +5068,7 @@ function advanceTurn(state: GameState, rng: SeededRng, map: GameMapDef): void {
             p.wonderTerritoryId = wonderTerr.id;
 
             if (p.wonderStatus === "constructing") {
-              p.wonderConstructionLeft = Math.max(0, (p.wonderConstructionLeft ?? 2) - 1);
+              p.wonderConstructionLeft = Math.max(0, (p.wonderConstructionLeft ?? 4) - 1);
               if (p.wonderConstructionLeft === 0) {
                 p.wonderStatus = "countdown";
                 p.wonderCountdownLeft = 6;
@@ -4934,7 +5104,7 @@ function advanceTurn(state: GameState, rng: SeededRng, map: GameMapDef): void {
               if (p.wonderCountdownLeft <= 0) {
                 state.winnerId = p.id;
                 state.phase = "game_over";
-                recordRoundSnapshot(state, state.round);
+                recordRoundSnapshot(state, state.round, true);
                 state.log.push(
                   `💥 O DIA FINAL CHEGOU: A Cidadela em ${wName} completou a contagem regressiva! ${p.name} venceu a campanha mundial!`
                 );
@@ -5027,13 +5197,13 @@ function advanceTurn(state: GameState, rng: SeededRng, map: GameMapDef): void {
 
         switch (candidate.doctrineId) {
           case "extermination": {
-            candidate.unplacedArmies += 5;
+            candidate.unplacedArmies += 3;
             spawnOnTerr(capTerr, "tank", 2);
             spawnOnTerr(capTerr, "artillery", 2);
             spawnOnTerr(capTerr, "aircraft", 1);
             spawnOnTerr(coastalTerr, "navy", 1);
             state.log.push(
-              `☠️ MOBILIZAÇÃO DE EXTERMÍNIO: ${candidate.name} mobilizou +5 Infantarias, +2 Tanques, +2 Artilharias, +1 Avião e +1 Navio!`
+              `☠️ MOBILIZAÇÃO DE EXTERMÍNIO: ${candidate.name} mobilizou +3 Infantarias, +2 Tanques, +2 Artilharias, +1 Avião e +1 Navio!`
             );
             break;
           }
@@ -5041,7 +5211,7 @@ function advanceTurn(state: GameState, rng: SeededRng, map: GameMapDef): void {
             const totalInf =
               candTerrs.reduce((sum, t) => sum + getTerritoryUnits(t).infantry, 0) +
               candidate.unplacedArmies;
-            const addInf = Math.max(0, Math.min(2, 50 - totalInf));
+            const addInf = Math.max(0, Math.min(3, 50 - totalInf));
             if (addInf > 0) {
               candidate.unplacedArmies += addInf;
               state.log.push(

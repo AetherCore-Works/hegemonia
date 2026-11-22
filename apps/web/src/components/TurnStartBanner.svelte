@@ -2,6 +2,7 @@
   import Icon from "./Icon.svelte";
   import FactionFlag from "./FactionFlag.svelte";
   import { t } from "../i18n/index.svelte";
+  import { getTerritoryName } from "../i18n/content.svelte";
   import { calculateTurnEconomy } from "@hegemonia/engine";
   import type { GameState, PlayerState } from "@hegemonia/shared";
 
@@ -130,8 +131,21 @@
 
       {#if game.lastCombat}
         <div class="banner-sitrep">
-          <Icon name="alert" size={13} />
-          <span>Último combate registrado: baixa geral de tropas nas fronteiras. Verifique o Diário de Guerra.</span>
+          <Icon name="swords" size={13} />
+          <span class="sitrep-content">
+            <strong>{getTerritoryName(game.lastCombat.fromTerritoryId)}</strong>
+            <Icon name="arrow-right" size={11} />
+            <strong>{getTerritoryName(game.lastCombat.toTerritoryId)}</strong>
+            <span>
+              · {t("combat_losses", {
+                att: game.lastCombat.attackerLosses,
+                def: game.lastCombat.defenderLosses,
+              })}
+              {#if game.lastCombat.conquered}
+                ({t("conquest_taken")})
+              {/if}
+            </span>
+          </span>
         </div>
       {/if}
 
@@ -303,6 +317,13 @@
     gap: 0.4rem;
     margin: 0 1rem 0.6rem;
     padding: 0.45rem 0.65rem;
+  }
+  .sitrep-content {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.3rem;
+  }
     background: rgba(15, 23, 42, 0.6);
     border-radius: 4px;
     font-size: 0.7rem;

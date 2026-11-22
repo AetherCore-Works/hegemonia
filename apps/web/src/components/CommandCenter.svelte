@@ -169,8 +169,10 @@
   function applyPreset(presetId: Exclude<RulesPresetId, "custom">) {
     if (!amIHost || !onUpdateCustomRules) return;
     const targetPresetId =
-      presetId === "classic_war" && customRules.classicMode ? "standard" : presetId;
-    const preset = RULES_PRESETS[targetPresetId];
+      presetId === "classic_war" && customRules.preset === "classic_war"
+        ? "total_war"
+        : presetId;
+    const preset = RULES_PRESETS[targetPresetId as keyof typeof RULES_PRESETS];
     if (!preset) return;
     onUpdateCustomRules(
       normalizeCustomRules({
@@ -182,15 +184,21 @@
 
   function patchCustomRules(patch: Partial<CustomRulesConfig>) {
     if (!amIHost || !onUpdateCustomRules) return;
-    const nextClassic = patch.classicMode ?? customRules.classicMode;
     onUpdateCustomRules(
       normalizeCustomRules({
         ...customRules,
         ...patch,
-        preset: nextClassic ? "classic_war" : "custom",
+        preset: "custom",
       })
     );
   }
+
+  let activePresetDef = $derived(
+    customRules.preset !== "custom" && customRules.preset in RULES_PRESETS
+      ? RULES_PRESETS[customRules.preset as keyof typeof RULES_PRESETS]
+      : null
+  );
+  let isCustomRulesModified = $derived(customRules.preset === "custom" || !activePresetDef);
 
   $effect(() => {
     api<{ leaderboard: LeaderboardRow[] }>("/api/leaderboard?limit=6")
@@ -780,27 +788,42 @@
           </aside>
         </div>
 
-        {#if competitionMode === "custom" && amIHost}
-          <!-- PRESETS & SANDBOX DE REGRAS (HEGEM-67 & HEGEM-110) -->
+        {#if competitionMode === "custom"}
+          <!-- PRESETS & SANDBOX DE REGRAS (HEGEM-67, HEGEM-110 & HEGEM-183) -->
           <div class="rules-sandbox-panel full-width">
             <div class="section-subhead">
               <div class="subhead-title-row">
                 <span>MODULARIDADE DE REGRAS & PRESETS DA SALA</span>
-                <span class="scenario-mode-tag">
-                  {amIHost ? "ANFITRIÃO CONFIGURA" : "SOMENTE LEITURA"}
-                </span>
+                <div class="sandbox-badges-group">
+                  <span
+                    class="preset-status-pill"
+                    class:is-custom={isCustomRulesModified}
+                  >
+                    {#if isCustomRulesModified}
+                      {i18n.locale === "en" ? "MODO: PERSONALIZADO" : "PERSONALIZADO"}
+                    {:else if activePresetDef}
+                      {i18n.locale === "en"
+                        ? `PRESET: ${activePresetDef.nameEn.toUpperCase()}`
+                        : `PRESET: ${activePresetDef.namePt.toUpperCase()}`}
+                    {/if}
+                  </span>
+                  <span class="scenario-mode-tag">
+                    {amIHost ? "ANFITRIÃO CONFIGURA" : "SOMENTE LEITURA"}
+                  </span>
+                </div>
               </div>
               <small>
-                Escolha um modo oficial com 1 clique (incluindo War Clássico puro) ou personalize economia, tensão e temporizador.
+                {#if isCustomRulesModified}
+                  Configuração personalizada manualmente pelo anfitrião. Clique em um dos 3 presets abaixo para restaurar um modo oficial.
+                {:else}
+                  Escolha um dos 3 modos oficiais com 1 clique ou ajuste qualquer parâmetro abaixo para personalizar a partida.
+                {/if}
               </small>
             </div>
 
             <div class="presets-row">
               {#each Object.values(RULES_PRESETS) as preset}
-                {@const isActive =
-                  preset.id === "classic_war"
-                    ? customRules.classicMode
-                    : !customRules.classicMode && customRules.preset === preset.id}
+                {@const isActive = customRules.preset === preset.id}
                 <button
                   type="button"
                   class="preset-card-btn"
@@ -812,6 +835,10 @@
                     <strong>{i18n.locale === "en" ? preset.nameEn : preset.namePt}</strong>
                     {#if isActive}
                       <span class="preset-active-pill">ATIVO</span>
+                    {:else}
+                      <span class="preset-tag-pill">
+                        {i18n.locale === "en" ? preset.badgeEn : preset.badgePt}
+                      </span>
                     {/if}
                   </div>
                   <small>{i18n.locale === "en" ? preset.descEn : preset.descPt}</small>
@@ -831,6 +858,23 @@
                       doctrineLimitEnabled: (e.currentTarget as HTMLInputElement).checked,
                     })}
                 />
+              </label>
+
+              <label class="sandbox-field">
+                <span>Modo de Combate</span>
+                <select
+                  value={customRules.combatMode ?? "deterministic"}
+                  disabled={!amIHost}
+                  onchange={(e) =>
+                    patchCustomRules({
+                      combatMode: (e.currentTarget as HTMLSelectElement).value as
+                        | "dice"
+                        | "deterministic",
+                    })}
+                >
+                  <option value="deterministic">Determinístico (Mini-Rolls +10% DEF)</option>
+                  <option value="dice">Dados RNG (Clássico)</option>
+                </select>
               </label>
 
               <label class="sandbox-field">
@@ -2386,8 +2430,44 @@
   }
   .presets-row {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 8px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .sandbox-badges-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .preset-status-pill {
+    font-size: 0.62rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: rgba(16, 185, 129, 0.16);
+    border: 1px solid rgba(16, 185, 129, 0.45);
+    color: #6ee7b7;
+  }
+  .preset-status-pill.is-custom {
+    background: rgba(245, 158, 11, 0.18);
+    border-color: rgba(245, 158, 11, 0.55);
+    color: #fcd34d;
+  }
+  .preset-tag-pill {
+    font-size: 0.56rem;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: rgba(56, 189, 248, 0.12);
+    border: 1px solid rgba(56, 189, 248, 0.28);
+    color: #7dd3fc;
+    white-space: nowrap;
+  }
+  @media (max-width: 820px) {
+    .presets-row {
+      grid-template-columns: 1fr;
+    }
   }
   .preset-card-btn {
     text-align: left;

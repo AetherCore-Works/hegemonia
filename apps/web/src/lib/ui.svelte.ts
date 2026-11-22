@@ -23,6 +23,7 @@ function loadTooltipsEnabled(): boolean {
 export interface ActiveTooltipState {
   text: string;
   subtext?: string;
+  variant?: "default" | "danger";
   x: number;
   y: number;
   visible: boolean;
@@ -69,9 +70,15 @@ class UiState {
     }
   }
 
-  showTooltip(text: string, x: number, y: number, subtext?: string) {
+  showTooltip(
+    text: string,
+    x: number,
+    y: number,
+    subtext?: string,
+    variant: "default" | "danger" = "default"
+  ) {
     if (!this.tooltipsEnabled || !text) return;
-    this.activeTooltip = { text, subtext, x, y, visible: true };
+    this.activeTooltip = { text, subtext, variant, x, y, visible: true };
   }
 
   hideTooltip() {
